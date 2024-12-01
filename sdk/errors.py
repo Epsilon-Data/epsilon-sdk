@@ -1,8 +1,6 @@
 class SDKError(Exception):
     pass
-
-class InvalidSessionError(SDKError):
+class ClientError(SDKError):
     pass
-
 class DatasetNotFoundError(SDKError):
     pass
