@@ -6,10 +6,11 @@ from sdk.errors import ClientError
 class AwsClient(IEpsilon):
     def __init__(self, auth: Auth, region_name):
         self.auth = auth
+        aws_credentials = auth.get_aws_credentials()
         self.s3 = boto3.client(
             "s3",
-            aws_access_key_id=self.auth.access_key,
-            aws_secret_access_key=self.auth.secret_key,
+            aws_access_key_id=aws_credentials["access_key"],
+            aws_secret_access_key=aws_credentials["secret_key"],
             region_name=region_name,
         )
 
