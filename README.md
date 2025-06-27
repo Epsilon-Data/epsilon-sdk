@@ -1,1 +1,25 @@
-# epsilon-sdk
+# Epsilon SDK - CLI Commands
+## Quick Start
+
+```bash
+# 0. update changes
+pip install -e . 
+
+# 1. Login
+epsilon login
+
+# 2. View available datasets
+epsilon datasets
+
+# 3. Download dataset archetype
+epsilon archetypes healthcare_db
+
+# 4. Generate Python classes from archetype
+epsilon compile archetypes/healthcare_db/healthcare_db.json
+
+# 5. Write analysis script & build package
+epsilon build example.py
+
+# 6. Middleware server yml analyzer
+python server_analyzer.py
+```
