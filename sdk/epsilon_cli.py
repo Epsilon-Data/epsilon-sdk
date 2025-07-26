@@ -414,7 +414,7 @@ def build(
             'analysis': {
                 'name': analysis_name,
                 'description': f'Analysis from {os.path.basename(analysis_script)}',
-                'script_file': f'{script_name}.py',
+                'script_file': os.path.basename(analysis_script),  # Use original script name
                 'requirements': 'requirements.txt'
             },
             'datasets': datasets,
@@ -443,6 +443,24 @@ def build(
 
         # Step 2: Copy Python script to build directory
         shutil.copy2(analysis_script, python_file)
+        
+        # Step 2.5: Copy archetype files to build directory
+        for dataset in datasets:
+            archetype_path = dataset['archetype_path']
+            if os.path.exists(archetype_path):
+                # Create archetypes directory structure in build
+                build_archetype_dir = os.path.join(output_dir, os.path.dirname(archetype_path))
+                os.makedirs(build_archetype_dir, exist_ok=True)
+                
+                # Copy archetype files
+                dataset_id = dataset['dataset_id']
+                archetype_source_dir = os.path.dirname(archetype_path)
+                build_archetype_target = os.path.join(output_dir, archetype_source_dir)
+                
+                # Copy all files from archetype directory
+                if os.path.exists(archetype_source_dir):
+                    shutil.copytree(archetype_source_dir, build_archetype_target, dirs_exist_ok=True)
+                    print(f"Copied archetype files for {dataset_id} to build directory")
 
         # Step 3: Create requirements.txt using pip freeze
         with open(requirements_file, 'w') as f:
