@@ -441,8 +441,8 @@ def build(
         with open(yaml_file, 'w') as f:
             yaml.dump(manifest, f, default_flow_style=False, indent=2, sort_keys=False)
 
-        # Step 2: Copy Python script to build directory
-        shutil.copy2(analysis_script, python_file)
+        # Step 2: Don't copy Python script - reference original location
+        # shutil.copy2(analysis_script, python_file)  # Commented out - use original script
         
         # Step 2.5: Copy archetype files to build directory
         for dataset in datasets:
