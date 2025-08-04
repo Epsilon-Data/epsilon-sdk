@@ -22,13 +22,13 @@ class Auth:
     @classmethod
     def authenticate_with_keycloak(cls, username: str, password: str, auth_url: str):
         """
-        Authenticate with Keycloak using username and password to get access token
+        Authenticate with Epsilon API using username and password to get access token
 
         Args:
             username: User's username or email
             password: User's password
-            auth_url: Full Keycloak token endpoint URL
-                     (e.g., "http://localhost:8080/realms/EPSILON/protocol/openid-connect/token")
+            auth_url: Full authentication endpoint URL
+                     (e.g., "https://app.epsilon-data.org/api/v1/hub/analysis/auth")
 
         Returns:
             Auth instance with access token
@@ -36,27 +36,35 @@ class Auth:
         Raises:
             AuthenticationError: If authentication fails
         """
-        data = {
-            "client_id": "metadata-client",
+        payload = {
             "username": username,
-            "password": password,
-            "grant_type": "password"
+            "password": password
+        }
+
+        headers = {
+            "Content-Type": "application/json"
         }
 
         try:
-            response = requests.post(auth_url, data=data)
+            response = requests.post(auth_url, json=payload, headers=headers)
             response.raise_for_status()
 
             token_data = response.json()
             access_token = token_data.get("access_token")
 
             if not access_token:
-                raise AuthenticationError("No access token received from Keycloak")
+                raise AuthenticationError("No access token received from authentication server")
 
-            # Create Auth instance with token and expiration time
+            # Create Auth instance with token
             auth = cls(access_token=access_token)
+            
+            # Parse token expiration if available
+            if "expires_in" in token_data:
+                auth.token_expires_at = datetime.now() + timedelta(seconds=token_data["expires_in"])
+            elif "exp" in token_data:
+                auth.token_expires_at = datetime.fromtimestamp(token_data["exp"])
 
-            return auth, token_data
+            return auth
 
         except requests.RequestException as e:
             raise AuthenticationError(f"Authentication failed: {str(e)}")

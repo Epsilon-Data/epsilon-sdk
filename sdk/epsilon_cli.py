@@ -23,7 +23,7 @@ app = typer.Typer(
 CONFIG_DIR = Path.home() / ".epsilon_sdk"
 CONFIG_PATH = CONFIG_DIR / "credentials.ini"
 
-isMock = True
+isMock = False
 
 def get_config(profile: str = "default") -> dict:
     """Get configuration for the given profile."""
@@ -72,7 +72,7 @@ def make_authenticated_request(method: str, endpoint: str, profile: str = "defau
 def login(
         username: str = typer.Option(..., prompt=True, help="Your username or email."),
         password: str = typer.Option(..., prompt=True, hide_input=True, help="Your password."),
-        base_url: str = typer.Option("http://localhost:3000", help="Base URL for all Epsilon APIs."),
+        base_url: str = typer.Option("https://app.epsilon-data.org", help="Base URL for all Epsilon APIs."),
         profile: str = typer.Option("default", help="Profile name to store credentials under.")
 ):
     """
@@ -80,9 +80,9 @@ def login(
     """
     try:
         # Construct the auth URL from base URL
-        auth_url = f"{base_url}/realms/EPSILON/protocol/openid-connect/token"
+        auth_url = f"{base_url}/api/v1/hub/analysis/auth"
 
-        typer.echo("Authenticating with Keycloak...")
+        typer.echo("Authenticating with Epsilon...")
 
         if isMock:
             # Mock authentication for testing purposes
@@ -181,14 +181,23 @@ def datasets(
             return
 
         # Real API call
-        response = make_authenticated_request("GET", "/api/datasets", profile)
+        response = make_authenticated_request("GET", "/api/v1/hub/analysis/datasets", profile)
         datasets = response.json()
 
         typer.secho("Available datasets:", fg=typer.colors.BLUE)
         for idx, dataset in enumerate(datasets, 1):
-            typer.echo(f"{idx}. ID: {dataset.get('id', 'N/A')} - {dataset.get('name', 'Unnamed')}")
-            if "description" in dataset and dataset["description"]:
-                typer.echo(f"   Description: {dataset['description']}")
+            # Adjust for the actual response structure
+            project_id = dataset.get('projectId', dataset.get('id', 'N/A'))
+            name = dataset.get('name', 'Unnamed')
+            status = dataset.get('status', '')
+            
+            typer.echo(f"{idx}. ID: {project_id} - {name}")
+            if status:
+                typer.echo(f"   Status: {status}")
+            if "university" in dataset:
+                typer.echo(f"   University: {dataset['university']}")
+            if "faculty" in dataset:
+                typer.echo(f"   Faculty: {dataset['faculty']}")
             typer.echo("")
 
     except Exception as e:
@@ -220,8 +229,12 @@ def archetypes(
             typer.secho(f"[MOCK MODE] Using mock archetype for {dataset_id}", fg=typer.colors.YELLOW)
         else:
             # Real API call
-            response = make_authenticated_request("GET", f"/api/datasets/{dataset_id}/archetype", profile)
+            response = make_authenticated_request("GET", f"/api/v1/hub/analysis/datasets/{dataset_id}", profile)
             archetype_data = response.json()
+            
+            # The response is an array with the archetype, extract the first element
+            if isinstance(archetype_data, list) and len(archetype_data) > 0:
+                archetype_data = archetype_data[0]
 
         # Create organized directory structure: archetypes/<dataset_id>/
         dataset_dir = os.path.join(out_dir, dataset_id)
