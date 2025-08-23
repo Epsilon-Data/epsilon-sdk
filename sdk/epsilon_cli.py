@@ -447,15 +447,15 @@ def build(
         }
 
         # Create output files
-        yaml_file = os.path.join(output_dir, f'{script_name}.yml')
+        yaml_file = os.path.join(output_dir, 'build.yml')
         python_file = os.path.join(output_dir, f'{script_name}.py')
         requirements_file = os.path.join(output_dir, 'requirements.txt')
         # Step 1: Write YAML manifest
         with open(yaml_file, 'w') as f:
             yaml.dump(manifest, f, default_flow_style=False, indent=2, sort_keys=False)
 
-        # Step 2: Don't copy Python script - reference original location
-        # shutil.copy2(analysis_script, python_file)  # Commented out - use original script
+        # Step 2: Copy Python script - reference original location
+        shutil.copy2(analysis_script, python_file)  # Commented out - use original script
         
         # Step 2.5: Copy archetype files to build directory
         for dataset in datasets:
@@ -483,7 +483,7 @@ def build(
 
         # Show what was created
         print(f"\n Build Package Created: {output_dir}/")
-        print(f"   {script_name}.yml - Analysis manifest")
+        print(f"   build.yml - Analysis manifest")
         print(f"   {script_name}.py - Analysis script")
 
         # Show summary
@@ -500,7 +500,7 @@ def build(
 
         print(f"\n Ready for Server:")
         print(f"   1. Submit package: {output_dir}/")
-        print(f"   2. Server reads: {script_name}.yml")
+        print(f"   2. Server reads: build.yml")
         print(f"   3. Server executes: {script_name}.py")
         return output_dir
 
