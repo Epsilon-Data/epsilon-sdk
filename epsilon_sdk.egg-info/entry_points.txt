@@ -1,2 +1,0 @@
-[console_scripts]
-epsilon = sdk.epsilon_cli:app

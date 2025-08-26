@@ -1,5 +1,0 @@
-requests
-typer[all]
-
-[dev]
-bump-my-version

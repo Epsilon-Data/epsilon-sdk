@@ -1,9 +1,0 @@
-Metadata-Version: 2.1
-Name: epsilon-sdk
-Version: 0.1.0
-Summary: SDK for accessing remote datasets and archetypes
-Requires-Python: >=3.7
-Requires-Dist: requests
-Requires-Dist: typer[all]
-Provides-Extra: dev
-Requires-Dist: bump-my-version; extra == "dev"
