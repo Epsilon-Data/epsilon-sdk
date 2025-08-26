@@ -23,3 +23,21 @@ epsilon build example.py
 # 6. Middleware server yml analyzer
 python server_analyzer.py
 ```
+
+
+## For version upgrade
+
+For patch version upgrade (0.1.0 → 0.1.1)
+```bash
+bump-my-version bump patch
+```
+
+For minor version upgrade (0.1.0 → 0.2.0)
+```bash
+bump-my-version bump minor
+```
+
+For major version upgrade (0.1.0 → 1.0.0)
+```bash
+bump-my-version bump major
+```
