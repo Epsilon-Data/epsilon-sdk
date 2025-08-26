@@ -510,5 +510,17 @@ def build(
         traceback.print_exc()
         raise typer.Exit(1)
 
+@app.command()
+def version():
+    """
+    Show the current version of epsilon-sdk.
+    """
+    try:
+        from sdk.__version__ import __version__
+        typer.echo(__version__)
+    except ImportError:
+        typer.echo("Version information not available")
+
+
 if __name__ == "__main__":
     app()
