@@ -337,8 +337,58 @@ def build(
 
         # Find dataset imports
         datasets = []
+        
+        # Find all local Python file dependencies
+        local_dependencies = set()
+        script_dir = os.path.dirname(os.path.abspath(analysis_script))
 
+        def find_local_dependencies(node, current_script_path):
+            """Recursively find all local Python file dependencies"""
+            dependencies = set()
+            
+            if isinstance(node, ast.ImportFrom):
+                module = node.module
+                if module:
+                    # Convert module path to file path
+                    module_parts = module.split('.')
+                    
+                    # Try to find the actual Python file
+                    for i in range(len(module_parts), 0, -1):
+                        potential_path = os.path.join(script_dir, *module_parts[:i])
+                        
+                        # Check for .py file
+                        py_file = potential_path + '.py'
+                        if os.path.exists(py_file):
+                            dependencies.add(os.path.relpath(py_file, script_dir))
+                            break
+                            
+                        # Check for package with __init__.py
+                        init_file = os.path.join(potential_path, '__init__.py')
+                        if os.path.exists(init_file):
+                            dependencies.add(os.path.relpath(init_file, script_dir))
+                            # Also check for specific module file in package
+                            if i < len(module_parts):
+                                specific_file = os.path.join(potential_path, module_parts[i] + '.py')
+                                if os.path.exists(specific_file):
+                                    dependencies.add(os.path.relpath(specific_file, script_dir))
+                            break
+            
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    module_name = alias.name
+                    # Try to find local module
+                    py_file = os.path.join(script_dir, module_name + '.py')
+                    if os.path.exists(py_file):
+                        dependencies.add(os.path.relpath(py_file, script_dir))
+            
+            return dependencies
+
+        # Analyze all import statements
         for node in ast.walk(tree):
+            if isinstance(node, (ast.ImportFrom, ast.Import)):
+                deps = find_local_dependencies(node, analysis_script)
+                local_dependencies.update(deps)
+                
             if isinstance(node, ast.ImportFrom):
                 module = node.module
 
@@ -375,6 +425,22 @@ def build(
                             })
 
                             print(f"Found dataset: {dataset_id}")
+        
+        # Copy local dependencies to build directory
+        if local_dependencies:
+            print(f"Found {len(local_dependencies)} local dependencies")
+            for dep_path in local_dependencies:
+                source_file = os.path.join(script_dir, dep_path)
+                target_file = os.path.join(output_dir, dep_path)
+                
+                # Create directory structure
+                target_dir = os.path.dirname(target_file)
+                if target_dir:
+                    os.makedirs(target_dir, exist_ok=True)
+                
+                # Copy file
+                shutil.copy2(source_file, target_file)
+                print(f"Copied dependency: {dep_path}")
 
                 # Generate requirements.txt using pip freeze
                 print("Generating requirements.txt...")
