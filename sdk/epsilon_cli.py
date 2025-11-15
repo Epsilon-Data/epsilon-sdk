@@ -23,7 +23,7 @@ app = typer.Typer(
 CONFIG_DIR = Path.home() / ".epsilon_sdk"
 CONFIG_PATH = CONFIG_DIR / "credentials.ini"
 
-isMock = False
+isMock = True
 
 def get_config(profile: str = "default") -> dict:
     """Get configuration for the given profile."""
