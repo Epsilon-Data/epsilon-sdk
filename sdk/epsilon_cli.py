@@ -1,20 +1,25 @@
 import subprocess
 import sys
+import warnings
+
+# Suppress urllib3 warnings about OpenSSL
+warnings.filterwarnings('ignore', message='urllib3 v2 only supports OpenSSL')
 
 import typer
 import json
 import os
 import configparser
-import requests
 from pathlib import Path
 from datetime import datetime
-import importlib.util
 import yaml
-from sdk.auth import Auth, AuthenticationError
+from .client import APIClient
+from .errors import AuthenticationError, SDKError
 from sdk.archetype import compile_archetype as compile_arch
-
-from sdk.mock_data import get_mock_datasets, get_mock_archetype, get_available_mock_dataset_ids
-
+from sdk.archetype import generate_csv_dummy_data
+from . import config as sdk_config
+import re
+import shutil
+import traceback
 
 app = typer.Typer(
     help="CLI for epsilon SDK: working with datasets, authentication, and generating Python model classes.")
@@ -23,99 +28,41 @@ app = typer.Typer(
 CONFIG_DIR = Path.home() / ".epsilon_sdk"
 CONFIG_PATH = CONFIG_DIR / "credentials.ini"
 
-isMock = True
 
-def get_config(profile: str = "default") -> dict:
-    """Get configuration for the given profile."""
-    if not CONFIG_PATH.exists():
-        typer.secho("🔒 No credentials found. Please run `epsilon login` first.", fg=typer.colors.RED)
-        raise typer.Exit(1)
-
-    config = configparser.ConfigParser()
-    config.read(CONFIG_PATH)
-    if profile not in config:
-        typer.secho(f"🔒 Profile '{profile}' not found. Available profiles: {', '.join(config.sections())}",
-                    fg=typer.colors.RED)
-        raise typer.Exit(1)
-
-    return dict(config[profile])
-
-
-def make_authenticated_request(method: str, endpoint: str, profile: str = "default", **kwargs):
-    """Make an authenticated request to the API."""
-    config = get_config(profile)
-    access_token = config.get("access_token")
-    base_url = config.get("base_url")
-
-    if not access_token:
-        typer.secho("No access token found. Please run `epsilon login` first.", fg=typer.colors.RED)
-        raise typer.Exit(1)
-
-    # Check token expiration
-    expires_at_str = config.get('expires_at')
-    if expires_at_str:
-        expires_at = datetime.fromisoformat(expires_at_str)
-        if datetime.now() >= expires_at:
-            typer.secho("Access token has expired. Please run `epsilon login` again.", fg=typer.colors.RED)
-            raise typer.Exit(1)
-
-    # Build the full URL and make request
-    full_url = f"{base_url}{endpoint}"
-    headers = {"Authorization": f"Bearer {access_token}"}
-
-    response = requests.request(method, full_url, headers=headers, **kwargs)
-    response.raise_for_status()
-    return response
+def get_client() -> APIClient:
+    """Get API client with stored credentials."""
+    return APIClient.from_config(CONFIG_PATH)
 
 
 @app.command()
 def login(
         username: str = typer.Option(..., prompt=True, help="Your username or email."),
         password: str = typer.Option(..., prompt=True, hide_input=True, help="Your password."),
-        base_url: str = typer.Option("https://app.epsilon-data.org", help="Base URL for all Epsilon APIs."),
-        profile: str = typer.Option("default", help="Profile name to store credentials under.")
 ):
     """
     Authenticate with Keycloak and store access token locally.
     """
     try:
         # Construct the auth URL from base URL
-        auth_url = f"{base_url}/api/v1/hub/analysis/auth"
-
         typer.echo("Authenticating with Epsilon...")
-
-        if isMock:
-            # Mock authentication for testing purposes
-            auth = Auth(access_token="mock_access_token")
-        else:
-            auth = Auth.authenticate_with_keycloak(
-                username=username,
-                password=password,
-                auth_url=auth_url
-            )
-
+        client = APIClient()  # Create new client for login
+        client.authenticate(username, password)
         # Store the credentials and configuration
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         config = configparser.ConfigParser()
         if CONFIG_PATH.exists():
             config.read(CONFIG_PATH)
-
-        config[profile] = {
-            "access_token": auth.access_token,
-            "expires_at": auth.token_expires_at.isoformat() if auth.token_expires_at else "",
-            "base_url": base_url,
+        config["default"] = {
+            "access_token": client.access_token,
+            "expires_at": client.token_expires_at.isoformat() if client.token_expires_at else "",
             "username": username
         }
-
         with open(CONFIG_PATH, "w") as f:
             config.write(f)
-
-        typer.secho(f"Successfully authenticated! Using base URL: {base_url}", fg=typer.colors.GREEN)
-
         # Show token expiration time
-        if auth.token_expires_at:
-            typer.echo(f"Token expires at: {auth.token_expires_at.strftime('%Y-%m-%d %H:%M:%S')}")
-
+        if client.token_expires_at:
+            typer.echo(f"Token expires at: {client.token_expires_at.strftime('%Y-%m-%d %H:%M:%S')}")
+        typer.echo("Success")
     except AuthenticationError as e:
         typer.secho(f"Authentication failed: {str(e)}", fg=typer.colors.RED)
         raise typer.Exit(1)
@@ -125,73 +72,99 @@ def login(
 
 
 @app.command()
-def status(
-        profile: str = typer.Option("default", help="Profile name to check status for.")
+def status():
+    """
+    Check your authentication status and current server.
+    """
+
+    typer.secho("Epsilon SDK Status", fg=typer.colors.BLUE, bold=True)
+    typer.echo(f"Server: {sdk_config.BASE_URL}")
+    typer.echo()
+
+    if not CONFIG_PATH.exists():
+        typer.secho("Status: Not logged in", fg=typer.colors.RED)
+        typer.echo("Run 'epsilon login' to get started")
+        return
+
+    config = configparser.ConfigParser()
+    config.read(CONFIG_PATH)
+
+    if "default" not in config:
+        typer.secho("Status: No credentials found", fg=typer.colors.RED)
+        typer.echo("Run 'epsilon login' to authenticate")
+        return
+
+    creds = config["default"]
+    username = creds.get("username", "Unknown")
+    typer.secho(f"Logged in as: {username}", fg=typer.colors.GREEN)
+
+
+@app.command(name="change-server")
+def change_server(
+        url: str = typer.Argument(..., help="New server URL")
 ):
     """
-    Check the authentication status and token validity.
+    Change which server you're connecting to.
     """
+    # Validate URL
+    if not url.startswith(('http://', 'https://')):
+        typer.secho("Error: Please provide a valid URL starting with http:// or https://", fg=typer.colors.RED)
+        raise typer.Exit(1)
+
+    # Clean up URL
+    url = url.rstrip('/')
+
     try:
-        config = get_config(profile)
+        # Update config file
+        config_file = Path(__file__).parent / "config.py"
 
-        typer.secho(f"Profile: {profile}", fg=typer.colors.BLUE)
-        typer.echo(f"Base URL: {config.get('base_url', 'N/A')}")
-        typer.echo(f"Username: {config.get('username', 'N/A')}")
-
-        # Check token expiration
-        expires_at_str = config.get('expires_at')
-        if expires_at_str:
-            expires_at = datetime.fromisoformat(expires_at_str)
-            now = datetime.now()
-
-            if now >= expires_at:
-                typer.secho(f"Token expired at: {expires_at.strftime('%Y-%m-%d %H:%M:%S')}", fg=typer.colors.RED)
-                typer.echo("Please run 'epsilon login' to refresh your authentication.")
-            else:
-                time_left = expires_at - now
-                typer.secho(f"Token valid until: {expires_at.strftime('%Y-%m-%d %H:%M:%S')}", fg=typer.colors.GREEN)
-                typer.echo(f"Time remaining: {time_left}")
-        else:
-            typer.echo("No expiration info available")
+        with open(config_file, 'r') as f:
+            content = f.read()
+        # Update BASE_URL
+        updated = re.sub(
+            r'BASE_URL = "[^"]*"',
+            f'BASE_URL = "{url}"',
+            content
+        )
+        with open(config_file, 'w') as f:
+            f.write(updated)
+        typer.secho(f"Server updated to: {url}", fg=typer.colors.GREEN)
+        typer.echo("Note: You'll need to login again with 'epsilon login'")
 
     except Exception as e:
-        typer.secho(f"Error checking status: {str(e)}", fg=typer.colors.RED)
+        typer.secho(f"Failed to update server: {e}", fg=typer.colors.RED)
         raise typer.Exit(1)
 
 
 @app.command()
-def datasets(
-        profile: str = typer.Option("default", help="Profile name to use for authentication.")
-):
+def datasets():
     """
     List available datasets from the Epsilon API.
     """
     try:
-        if isMock:
-            # Use mock data
-            mock_datasets = get_mock_datasets()
+        # API call
+        client = get_client()
+        datasets = client.get_datasets()
 
-            typer.secho("[MOCK MODE] Available datasets:", fg=typer.colors.BLUE)
-            for idx, dataset in enumerate(mock_datasets, 1):
-                typer.echo(f"{idx}. ID: {dataset['id']} - {dataset['name']}")
-                typer.echo(f"   Description: {dataset['description']}")
-                typer.echo("")
-
-            typer.secho("Try: epsilon archetypes <dataset_id>", fg=typer.colors.YELLOW)
+        if not datasets:
+            typer.secho("No datasets available", fg=typer.colors.YELLOW)
+            typer.echo("You may need to create or request access to datasets")
             return
-
-        # Real API call
-        response = make_authenticated_request("GET", "/api/v1/hub/analysis/datasets", profile)
-        datasets = response.json()
 
         typer.secho("Available datasets:", fg=typer.colors.BLUE)
         for idx, dataset in enumerate(datasets, 1):
-            # Adjust for the actual response structure
-            project_id = dataset.get('projectId', dataset.get('id', 'N/A'))
-            name = dataset.get('name', 'Unnamed')
+            # Handle different field names from API
+            dataset_id = dataset.get('datasetId', dataset.get('projectId', dataset.get('id', 'N/A')))
+            package_id = dataset.get('packageId', '')
+            name = dataset.get('name', package_id if package_id else 'Unnamed')
+            last_modified = dataset.get('lastModified', '')
             status = dataset.get('status', '')
-            
-            typer.echo(f"{idx}. ID: {project_id} - {name}")
+
+            typer.echo(f"{idx}. Dataset ID: {dataset_id}")
+            if package_id:
+                typer.echo(f"   Package: {package_id}")
+            if last_modified:
+                typer.echo(f"   Last Modified: {last_modified}")
             if status:
                 typer.echo(f"   Status: {status}")
             if "university" in dataset:
@@ -200,64 +173,182 @@ def datasets(
                 typer.echo(f"   Faculty: {dataset['faculty']}")
             typer.echo("")
 
+    except AuthenticationError as e:
+        typer.secho(f"Authentication error: {e}", fg=typer.colors.RED)
+        typer.echo("Please run 'epsilon login' to authenticate")
+        raise typer.Exit(1)
+    except SDKError as e:
+        typer.secho(f"API error: {e}", fg=typer.colors.RED)
+        raise typer.Exit(1)
     except Exception as e:
-        typer.secho(f"Error: {str(e)}", fg=typer.colors.RED)
+        typer.secho(f"Unexpected error: {e}", fg=typer.colors.RED)
         raise typer.Exit(1)
 
 
 @app.command()
-def archetypes(
-        dataset_id: str = typer.Argument(..., help="ID of the dataset to download archetype from."),
-        out_dir: str = typer.Option("archetypes", help="Base directory to save archetypes."),
-        profile: str = typer.Option("default", help="Profile name to use for authentication.")
+def init(
+        dataset_id: str = typer.Argument(..., help="ID of the dataset to initialize project with.")
 ):
     """
-    Download archetype from a specified dataset and generate CSV dummy data.
-    Creates organized folder structure: archetypes/<dataset_id>/
+    Initialize a new Epsilon project with a dataset.
+    Creates project.yml, downloads archetype, generates models and dummy data.
     """
     try:
-        if isMock:
-            # Use mock data
-            archetype_data = get_mock_archetype(dataset_id)
+        # Check if project already exists
+        if os.path.exists("project.yml"):
+            typer.secho("Project already initialized. Use 'epsilon clean' to start over.", fg=typer.colors.YELLOW)
+            raise typer.Exit(1)
 
-            if archetype_data is None:
-                available_ids = get_available_mock_dataset_ids()
-                typer.secho(f"Dataset '{dataset_id}' not found in mock data", fg=typer.colors.RED)
-                typer.secho(f"Available datasets: {', '.join(available_ids)}", fg=typer.colors.YELLOW)
-                raise typer.Exit(1)
+        typer.secho(f"Initializing project with dataset: {dataset_id}", fg=typer.colors.BLUE)
 
-            typer.secho(f"[MOCK MODE] Using mock archetype for {dataset_id}", fg=typer.colors.YELLOW)
-        else:
-            # Real API call
-            response = make_authenticated_request("GET", f"/api/v1/hub/analysis/datasets/{dataset_id}", profile)
-            archetype_data = response.json()
-            
-            # The response is an array with the archetype, extract the first element
-            if isinstance(archetype_data, list) and len(archetype_data) > 0:
-                archetype_data = archetype_data[0]
+        client = get_client()
 
-        # Create organized directory structure: archetypes/<dataset_id>/
-        dataset_dir = os.path.join(out_dir, dataset_id)
-        os.makedirs(dataset_dir, exist_ok=True)
+        # Get dataset info
+        datasets = client.get_datasets()
+        package_id = None
+        for dataset in datasets:
+            if dataset.get('datasetId') == dataset_id:
+                package_id = dataset.get('packageId', dataset_id)
+                break
 
-        # Save the archetype to file in dataset folder
-        archetype_file = os.path.join(dataset_dir, f"{dataset_id}.json")
-        with open(archetype_file, 'w') as f:
+        if not package_id:
+            typer.secho(f"Warning: Could not find package ID for dataset {dataset_id}", fg=typer.colors.YELLOW)
+            package_id = dataset_id
+
+        # Create generated directory for SDK files
+        os.makedirs("generated", exist_ok=True)
+
+        # Create __init__.py to make generated a Python package
+        with open("generated/__init__.py", 'w') as f:
+            f.write('# Generated files - do not edit manually\n')
+        typer.secho("✓ Created generated/__init__.py", fg=typer.colors.GREEN)
+
+        # Download archetype
+        typer.echo("Downloading archetype...")
+        archetype_data = client.get_dataset(dataset_id)
+
+        # Save archetype in generated folder
+        with open("generated/archetype.json", 'w') as f:
             json.dump(archetype_data, f, indent=2)
+        typer.secho("✓ Created generated/archetype.json", fg=typer.colors.GREEN)
 
-        typer.secho(f"Archetype downloaded to {archetype_file}", fg=typer.colors.GREEN)
+        # Generate dummy data in generated folder
+        typer.echo("Generating dummy data...")
+        generate_csv_dummy_data(archetype_data, "generated/data.csv", num_records=10)
+        typer.secho("✓ Created generated/data.csv", fg=typer.colors.GREEN)
 
-        # Generate CSV dummy data in dataset folder
-        print("Generating CSV dummy data...")
-        from sdk.archetype import generate_csv_dummy_data
+        # Compile to models.py in generated folder
+        typer.echo("Generating Python models...")
+        compile_arch("generated/archetype.json", "generated/models.py")
+        typer.secho("✓ Created generated/models.py", fg=typer.colors.GREEN)
 
-        csv_file = os.path.join(dataset_dir, f"{dataset_id}_dummy.csv")
-        generate_csv_dummy_data(archetype_data, csv_file, num_records=10)
+        # Create project.yml
+        project_config = {
+            'name': f'Epsilon Project - {package_id}',
+            'dataset_id': dataset_id,
+            'package_id': package_id,
+            'entry_point': 'main.py',
+            'epsilon': 1.0,
+            'created_at': datetime.now().isoformat()
+        }
 
-        typer.secho(f"Dummy data generated: {csv_file}", fg=typer.colors.GREEN)
+        with open("project.yml", 'w') as f:
+            yaml.dump(project_config, f, default_flow_style=False, indent=2)
+        typer.secho("✓ Created project.yml", fg=typer.colors.GREEN)
 
-        # Update compile command suggestion
-        print(f"You can compile it using: epsilon compile {archetype_file}")
+        # Create template main.py
+        main_template = '''from generated.models import create_dataset
+
+def main():
+    # Load the dataset
+    dataset = create_dataset()
+    print(f"Loaded {len(dataset)} records")
+
+    # Your analysis code here
+    for record in dataset:
+        # Example: Access fields from your archetype
+        # print(record.field_name)
+        pass
+
+    return {"result": "Analysis complete"}
+
+if __name__ == "__main__":
+    result = main()
+    print(result)
+'''
+        with open("main.py", 'w') as f:
+            f.write(main_template)
+        typer.secho("✓ Created main.py template", fg=typer.colors.GREEN)
+
+        # Create .gitignore
+        gitignore_content = '''# Epsilon project files
+generated/data.csv      # Never commit dummy data - replaced with real data on server
+*.pyc
+__pycache__/
+.epsilon_sdk/
+'''
+        with open(".gitignore", 'w') as f:
+            f.write(gitignore_content)
+        typer.secho("✓ Created .gitignore", fg=typer.colors.GREEN)
+
+        typer.echo()
+        typer.secho("Project initialized successfully!", fg=typer.colors.GREEN, bold=True)
+        typer.echo("Next steps:")
+        typer.echo("  1. Edit main.py to write your analysis")
+        typer.echo("  2. Run 'epsilon run' to test locally")
+        typer.echo("  3. Run 'epsilon submit' to execute on server")
+
+    except AuthenticationError as e:
+        typer.secho(f"Authentication error: {e}", fg=typer.colors.RED)
+        typer.echo("Please run 'epsilon login' to authenticate")
+        raise typer.Exit(1)
+    except SDKError as e:
+        typer.secho(f"API error: {e}", fg=typer.colors.RED)
+        raise typer.Exit(1)
+    except Exception as e:
+        typer.secho(f"Error: {str(e)}", fg=typer.colors.RED)
+        raise typer.Exit(1)
+
+
+@app.command()
+def run():
+    """
+    Run the project locally with dummy data.
+    """
+    try:
+        # Check if we're in a project directory
+        if not os.path.exists("project.yml"):
+            typer.secho("Error: Not in an Epsilon project directory.", fg=typer.colors.RED)
+            typer.echo("Run 'epsilon init <dataset_id>' to create a project.")
+            raise typer.Exit(1)
+
+        # Load project config
+        with open("project.yml", 'r') as f:
+            project = yaml.safe_load(f)
+
+        entry_point = project.get('entry_point')
+
+        if not os.path.exists(entry_point):
+            typer.secho(f"Error: Entry point '{entry_point}' not found.", fg=typer.colors.RED)
+            raise typer.Exit(1)
+
+        typer.echo(f"Running {entry_point} locally...")
+
+        # Run the Python script
+        result = subprocess.run([sys.executable, entry_point],
+                                capture_output=True, text=True)
+
+        if result.stdout:
+            typer.echo(result.stdout)
+
+        if result.stderr:
+            typer.secho(result.stderr, fg=typer.colors.RED)
+
+        if result.returncode != 0:
+            typer.secho(f"Script exited with code {result.returncode}", fg=typer.colors.RED)
+            raise typer.Exit(result.returncode)
+
+        typer.secho("✓ Script completed successfully", fg=typer.colors.GREEN)
 
     except Exception as e:
         typer.secho(f"Error: {str(e)}", fg=typer.colors.RED)
@@ -265,223 +356,117 @@ def archetypes(
 
 
 @app.command()
-def compile(
-        archetype_file: str = typer.Argument(..., help="Path to the archetype JSON file."),
-        out_file: str = typer.Option(None, help="Path to save the generated Python models.")
-):
+def clean():
     """
-    Compile a JSON archetype into Python classes.
+    Clean project files (generated/ folder, main.py, project.yml).
     """
-    try:
-        if not out_file:
-            # Use the same name as the archetype file but with .py extension
-            out_file = os.path.splitext(archetype_file)[0] + ".py"
 
-        # Use the existing compile_arch import (no changes needed here)
-        output_path = compile_arch(archetype_file, out_file)
-        typer.secho(f"Model classes generated at {output_path}", fg=typer.colors.GREEN)
+    files_to_clean = ["project.yml", "main.py", ".gitignore"]
+    dirs_to_clean = ["generated"]
 
-        # Show example usage
-        basename = os.path.basename(output_path)
-        module_name = os.path.splitext(basename)[0]
-        typer.echo("\nExample usage:")
-        typer.echo(f"  from {module_name} import create_dataset")
-        typer.echo("  dataset = create_dataset()")
+    cleaned = []
 
-        # Parse the archetype to show example access
-        with open(archetype_file, 'r') as f:
-            data = json.load(f)
+    # Clean files
+    for file in files_to_clean:
+        if os.path.exists(file):
+            os.remove(file)
+            cleaned.append(file)
 
-        if data:
-            # Find the first key in the data for example
-            first_key = next(iter(data))
-            typer.echo(f"  # Access with dot notation:")
-            typer.echo(f"  dataset.first.{first_key}")
+    # Clean directories
+    for dir_name in dirs_to_clean:
+        if os.path.exists(dir_name):
+            shutil.rmtree(dir_name)
+            cleaned.append(f"{dir_name}/")
 
-            # If there's a nested structure, show that as an example too
-            if isinstance(data[first_key], dict):
-                nested_key = next(iter(data[first_key]))
-                typer.echo(f"  dataset.first.{first_key}.{nested_key}")
-
-    except Exception as e:
-        typer.secho(f"Error: {str(e)}", fg=typer.colors.RED)
-        raise typer.Exit(1)
+    if cleaned:
+        typer.secho(f"Cleaned: {', '.join(cleaned)}", fg=typer.colors.GREEN)
+    else:
+        typer.echo("No project files to clean")
 
 
 @app.command()
 def build(
-        analysis_script: str = typer.Argument(..., help="Path to analysis script"),
         output_dir: str = typer.Option("./build", help="Output directory")
 ):
     """
-    Build analysis package by analyzing import statements in Python script.
-    Creates both YAML manifest and prepared Python script in build directory.
+    Build analysis package from project configuration.
+    Reads project.yml to get entry point and dataset information.
     """
     try:
-        import ast
-        import shutil
+        # Check if we're in a project directory
+        if not os.path.exists("project.yml"):
+            typer.secho("Error: Not in an Epsilon project directory.", fg=typer.colors.RED)
+            typer.echo("Run 'epsilon init <dataset_id>' to create a project first.")
+            raise typer.Exit(1)
+
+        # Load project config
+        with open("project.yml", 'r') as f:
+            project = yaml.safe_load(f)
+
+        analysis_script = project.get('entry_point', 'main.py')
+        dataset_id = project.get('dataset_id')
+        package_id = project.get('package_id')
 
         os.makedirs(output_dir, exist_ok=True)
 
         print(f"Building analysis package from: {analysis_script}")
+        print(f"Dataset: {dataset_id} ({package_id})")
 
         if not os.path.exists(analysis_script):
             typer.secho(f"Script not found: {analysis_script}", fg=typer.colors.RED)
             raise typer.Exit(1)
 
-        # Parse the Python script
-        with open(analysis_script, 'r') as f:
-            source = f.read()
+        # Create dataset info from project configuration
+        datasets = [{
+            'dataset_id': dataset_id,
+            'package_id': package_id,
+            'import_path': 'generated.models',
+            'function_name': 'create_dataset',
+            'archetype_path': 'generated/archetype.json'
+        }]
 
-        tree = ast.parse(source)
+        print(f"Using dataset: {dataset_id} ({package_id})")
 
-        # Find dataset imports
-        datasets = []
-        
-        # Find all local Python file dependencies
-        local_dependencies = set()
-        script_dir = os.path.dirname(os.path.abspath(analysis_script))
+        # Copy generated folder to build directory
+        print("Copying generated files...")
+        if os.path.exists("generated"):
+            shutil.copytree("generated", os.path.join(output_dir, "generated"), dirs_exist_ok=True)
+            print("Copied generated/ folder")
 
-        def find_local_dependencies(node, current_script_path):
-            """Recursively find all local Python file dependencies"""
-            dependencies = set()
-            
-            if isinstance(node, ast.ImportFrom):
-                module = node.module
-                if module:
-                    # Convert module path to file path
-                    module_parts = module.split('.')
-                    
-                    # Try to find the actual Python file
-                    for i in range(len(module_parts), 0, -1):
-                        potential_path = os.path.join(script_dir, *module_parts[:i])
-                        
-                        # Check for .py file
-                        py_file = potential_path + '.py'
-                        if os.path.exists(py_file):
-                            dependencies.add(os.path.relpath(py_file, script_dir))
-                            break
-                            
-                        # Check for package with __init__.py
-                        init_file = os.path.join(potential_path, '__init__.py')
-                        if os.path.exists(init_file):
-                            dependencies.add(os.path.relpath(init_file, script_dir))
-                            # Also check for specific module file in package
-                            if i < len(module_parts):
-                                specific_file = os.path.join(potential_path, module_parts[i] + '.py')
-                                if os.path.exists(specific_file):
-                                    dependencies.add(os.path.relpath(specific_file, script_dir))
-                            break
-            
-            elif isinstance(node, ast.Import):
-                for alias in node.names:
-                    module_name = alias.name
-                    # Try to find local module
-                    py_file = os.path.join(script_dir, module_name + '.py')
-                    if os.path.exists(py_file):
-                        dependencies.add(os.path.relpath(py_file, script_dir))
-            
-            return dependencies
+        # Generate requirements.txt using pip freeze
+        print("Generating requirements.txt...")
 
-        # Analyze all import statements
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.ImportFrom, ast.Import)):
-                deps = find_local_dependencies(node, analysis_script)
-                local_dependencies.update(deps)
-                
-            if isinstance(node, ast.ImportFrom):
-                module = node.module
+        try:
+            # Run pip freeze to get current environment packages
+            result = subprocess.run([sys.executable, '-m', 'pip', 'freeze'],
+                                    capture_output=True, text=True, check=True)
 
-                # Look for: from archetypes.dataset_name.dataset_name import create_dataset
-                if (module and
-                        module.startswith('archetypes.') and
-                        '.create_dataset' not in module):
+            pip_freeze_output = result.stdout.strip()
 
-                    # Extract dataset name from module path
-                    # archetypes.customer_db.customer_db -> customer_db
-                    parts = module.split('.')
-                    if len(parts) >= 3 and parts[0] == 'archetypes':
-                        dataset_id = parts[1]  # customer_db, sales_db, etc.
+            if pip_freeze_output:
+                requirements_content = [
+                    "# Auto-generated requirements using pip freeze",
+                    f"# Generated from: {analysis_script}",
+                    f"# Generated at: {datetime.now()}",
+                    "",
+                    pip_freeze_output
+                ]
 
-                        # Check if importing create_dataset
-                        imports_create_dataset = any(
-                            alias.name == 'create_dataset'
-                            for alias in (node.names or [])
-                        )
+                print(f"Captured {len([l for l in pip_freeze_output.split() if l.strip()])} packages")
+            else:
+                requirements_content = [
+                    "# No packages found in current environment",
+                    f"# Generated at: {datetime.now()}"
+                ]
+                print("No packages found in current environment")
 
-                        if imports_create_dataset:
-                            # Get the alias name if any
-                            alias_name = None
-                            for alias in node.names:
-                                if alias.name == 'create_dataset':
-                                    alias_name = alias.asname or 'create_dataset'
-                                    break
-
-                            datasets.append({
-                                'dataset_id': dataset_id,
-                                'import_path': module,
-                                'function_name': alias_name,
-                                'archetype_path': f'archetypes/{dataset_id}/{dataset_id}.json'
-                            })
-
-                            print(f"Found dataset: {dataset_id}")
-        
-        # Copy local dependencies to build directory
-        if local_dependencies:
-            print(f"Found {len(local_dependencies)} local dependencies")
-            for dep_path in local_dependencies:
-                source_file = os.path.join(script_dir, dep_path)
-                target_file = os.path.join(output_dir, dep_path)
-                
-                # Create directory structure
-                target_dir = os.path.dirname(target_file)
-                if target_dir:
-                    os.makedirs(target_dir, exist_ok=True)
-                
-                # Copy file
-                shutil.copy2(source_file, target_file)
-                print(f"Copied dependency: {dep_path}")
-
-                # Generate requirements.txt using pip freeze
-                print("Generating requirements.txt...")
-
-                try:
-                    # Run pip freeze to get current environment packages
-                    result = subprocess.run([sys.executable, '-m', 'pip', 'freeze'],
-                                            capture_output=True, text=True, check=True)
-
-                    pip_freeze_output = result.stdout.strip()
-
-                    if pip_freeze_output:
-                        requirements_content = [
-                            "# Auto-generated requirements using pip freeze",
-                            f"# Generated from: {analysis_script}",
-                            f"# Generated at: {datetime.now()}",
-                            "",
-                            pip_freeze_output
-                        ]
-
-                        # Count packages
-                        package_count = len([line for line in pip_freeze_output.split('\n') if
-                                             line.strip() and not line.startswith('#')])
-
-                        print(f"Captured {package_count} packages from current environment")
-                    else:
-                        requirements_content = [
-                            "# No packages found in current environment",
-                            f"# Generated at: {datetime.now()}"
-                        ]
-                        package_count = 0
-                        print("No packages found in current environment")
-
-                except subprocess.CalledProcessError as e:
-                    print(f"Could not run pip freeze: {e}")
-                    requirements_content = [
-                        "# Could not generate requirements automatically",
-                        "# Please install dependencies manually in enclave",
-                        f"# Error: {e}"
-                    ]
-                    package_count = 0
+        except subprocess.CalledProcessError as e:
+            print(f"Could not run pip freeze: {e}")
+            requirements_content = [
+                "# Could not generate requirements automatically",
+                "# Please install dependencies manually in enclave",
+                f"# Error: {e}"
+            ]
 
         # Get script metadata
         script_name = os.path.splitext(os.path.basename(analysis_script))[0]
@@ -520,28 +505,11 @@ def build(
         with open(yaml_file, 'w') as f:
             yaml.dump(manifest, f, default_flow_style=False, indent=2, sort_keys=False)
 
-        # Step 2: Copy Python script - reference original location
-        shutil.copy2(analysis_script, python_file)  # Commented out - use original script
-        
-        # Step 2.5: Copy archetype files to build directory
-        for dataset in datasets:
-            archetype_path = dataset['archetype_path']
-            if os.path.exists(archetype_path):
-                # Create archetypes directory structure in build
-                build_archetype_dir = os.path.join(output_dir, os.path.dirname(archetype_path))
-                os.makedirs(build_archetype_dir, exist_ok=True)
-                
-                # Copy archetype files
-                dataset_id = dataset['dataset_id']
-                archetype_source_dir = os.path.dirname(archetype_path)
-                build_archetype_target = os.path.join(output_dir, archetype_source_dir)
-                
-                # Copy all files from archetype directory
-                if os.path.exists(archetype_source_dir):
-                    shutil.copytree(archetype_source_dir, build_archetype_target, dirs_exist_ok=True)
-                    print(f"Copied archetype files for {dataset_id} to build directory")
+        # Step 2: Copy Python script
+        shutil.copy2(analysis_script, python_file)
+        print(f"Copied {analysis_script}")
 
-        # Step 3: Create requirements.txt using pip freeze
+        # Step 3: Create requirements.txt
         with open(requirements_file, 'w') as f:
             f.write('\n'.join(requirements_content))
 
@@ -557,12 +525,8 @@ def build(
         print(f"   Analysis: {manifest['analysis']['name']}")
         print(f"   Script: {manifest['analysis']['script_file']}")
 
-        if datasets:
-            print(f"   Datasets ({len(datasets)}):")
-            for dataset in datasets:
-                print(f"{dataset['dataset_id']} → {dataset['function_name']}()")
-        else:
-            typer.secho("No datasets detected!", fg=typer.colors.YELLOW)
+        print(f"   Dataset: {dataset_id} ({package_id})")
+        print(f"   Import: from generated.models import create_dataset")
 
         print(f"\n Ready for Server:")
         print(f"   1. Submit package: {output_dir}/")
@@ -572,9 +536,9 @@ def build(
 
     except Exception as e:
         typer.secho(f" Build failed: {e}", fg=typer.colors.RED)
-        import traceback
         traceback.print_exc()
         raise typer.Exit(1)
+
 
 @app.command()
 def version():
