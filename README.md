@@ -20,8 +20,6 @@ epsilon compile archetypes/healthcare_db/healthcare_db.json
 # 5. Write analysis script & build package
 epsilon build example.py
 
-# 6. Middleware server yml analyzer
-python server_analyzer.py
 ```
 
 

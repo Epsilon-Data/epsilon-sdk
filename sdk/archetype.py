@@ -12,20 +12,45 @@ def generate_csv_dummy_data(archetype_data: Dict, csv_file_path: str, num_record
     This will be called during 'epsilon archetypes' command
     """
     def extract_fields_from_archetype(obj: Dict, prefix: str = "") -> List[tuple]:
-        """Extract all fields with their types from nested archetype structure"""
+        """Extract all fields with their types from JSON Schema structure"""
         fields = []
 
-        for key, value in obj.items():
-            field_name = f"{prefix}.{key}" if prefix else key
+        # Handle JSON Schema format
+        if "properties" in obj:
+            # This is a JSON Schema object
+            for key, value in obj["properties"].items():
+                field_name = f"{prefix}.{key}" if prefix else key
 
-            if isinstance(value, dict):
-                if "type" in value:
-                    # It's a field definition
-                    fields.append((field_name, value["type"]))
-                else:
-                    # It's a nested object - recurse
-                    nested_fields = extract_fields_from_archetype(value, field_name)
-                    fields.extend(nested_fields)
+                if isinstance(value, dict):
+                    if "type" in value:
+                        if value["type"] == "object" and "properties" in value:
+                            # Nested object with properties - recurse
+                            nested_fields = extract_fields_from_archetype(value, field_name)
+                            fields.extend(nested_fields)
+                        else:
+                            # Simple field with type
+                            fields.append((field_name, value["type"]))
+                    else:
+                        # Object without explicit type - assume object and recurse
+                        nested_fields = extract_fields_from_archetype(value, field_name)
+                        fields.extend(nested_fields)
+        else:
+            # Handle non-schema format (legacy)
+            for key, value in obj.items():
+                # Skip schema metadata fields
+                if key in ["$id", "$schema", "title", "type"]:
+                    continue
+
+                field_name = f"{prefix}.{key}" if prefix else key
+
+                if isinstance(value, dict):
+                    if "type" in value:
+                        # It's a field definition
+                        fields.append((field_name, value["type"]))
+                    else:
+                        # It's a nested object - recurse
+                        nested_fields = extract_fields_from_archetype(value, field_name)
+                        fields.extend(nested_fields)
 
         return fields
 
@@ -92,19 +117,40 @@ def generate_all_classes(data: Dict, main_class_name: str = "Root") -> str:
         """Recursively collect all nested classes first"""
 
         if isinstance(obj, dict):
-            for key, value in obj.items():
-                if isinstance(value, dict) and "type" not in value:
-                    # This is a nested object that needs its own class
-                    safe_key = key.replace(" ", "_").replace("-", "_").replace(".", "_")
-                    nested_class_name = safe_key.title()
+            # Handle JSON Schema format
+            if "properties" in obj:
+                for key, value in obj["properties"].items():
+                    if isinstance(value, dict) and value.get("type") == "object" and "properties" in value:
+                        # This is a nested object that needs its own class
+                        safe_key = key.replace(" ", "_").replace("-", "_").replace(".", "_")
+                        nested_class_name = safe_key.title()
 
-                    # Recursively collect deeper nested classes first
-                    collect_nested_classes(value, nested_class_name, collected_classes, indent + 1)
+                        # Recursively collect deeper nested classes first
+                        collect_nested_classes(value, nested_class_name, collected_classes, indent + 1)
 
-                    # Generate this nested class
-                    nested_class_code = generate_single_class(nested_class_name, value, 0)
-                    if nested_class_code not in collected_classes:
-                        collected_classes.append(nested_class_code)
+                        # Generate this nested class
+                        nested_class_code = generate_single_class(nested_class_name, value, 0)
+                        if nested_class_code not in collected_classes:
+                            collected_classes.append(nested_class_code)
+            else:
+                # Legacy format
+                for key, value in obj.items():
+                    # Skip schema metadata fields
+                    if key in ["$id", "$schema", "title", "type"]:
+                        continue
+
+                    if isinstance(value, dict) and "type" not in value:
+                        # This is a nested object that needs its own class
+                        safe_key = key.replace(" ", "_").replace("-", "_").replace(".", "_")
+                        nested_class_name = safe_key.title()
+
+                        # Recursively collect deeper nested classes first
+                        collect_nested_classes(value, nested_class_name, collected_classes, indent + 1)
+
+                        # Generate this nested class
+                        nested_class_code = generate_single_class(nested_class_name, value, 0)
+                        if nested_class_code not in collected_classes:
+                            collected_classes.append(nested_class_code)
 
     def generate_single_class(class_name: str, data: Any, indent: int = 0) -> str:
         """Generate a single class"""
@@ -119,40 +165,82 @@ def generate_all_classes(data: Dict, main_class_name: str = "Root") -> str:
             code.append("")
 
             # Generate properties for each field
-            for key, value in data.items():
-                safe_key = key.replace(" ", "_").replace("-", "_").replace(".", "_")
+            if "properties" in data:
+                # Handle JSON Schema format
+                for key, value in data["properties"].items():
+                    safe_key = key.replace(" ", "_").replace("-", "_").replace(".", "_")
 
-                if isinstance(value, dict) and "type" not in value:
-                    # Nested object - create property that returns another class
-                    nested_class_name = safe_key.title()
-                    code.append(f"{indent_str}    @property")
-                    code.append(f"{indent_str}    def {safe_key}(self):")
-                    code.append(f"{indent_str}        # Handle nested field access with dot notation")
-                    code.append(
-                        f"{indent_str}        if '{key}' in self._data and isinstance(self._data['{key}'], dict):")
-                    code.append(f"{indent_str}            return {nested_class_name}(self._data['{key}'])")
-                    code.append(f"{indent_str}        # Handle flattened CSV data")
-                    code.append(f"{indent_str}        flattened = {{}}")
-                    code.append(f"{indent_str}        prefix = '{key}.'")
-                    code.append(f"{indent_str}        for k, v in self._data.items():")
-                    code.append(f"{indent_str}            if k.startswith(prefix):")
-                    code.append(f"{indent_str}                nested_key = k[len(prefix):]")
-                    code.append(f"{indent_str}                flattened[nested_key] = v")
-                    code.append(f"{indent_str}        return {nested_class_name}(flattened)")
-                    code.append("")
-                else:
-                    # Simple property (works with both nested JSON and flattened CSV)
-                    code.append(f"{indent_str}    @property")
-                    code.append(f"{indent_str}    def {safe_key}(self):")
-                    code.append(f"{indent_str}        # Try direct access first (JSON format)")
-                    code.append(f"{indent_str}        if '{key}' in self._data:")
-                    code.append(f"{indent_str}            return self._data['{key}']")
-                    code.append(f"{indent_str}        # Try flattened access (CSV format)")
-                    code.append(f"{indent_str}        for k, v in self._data.items():")
-                    code.append(f"{indent_str}            if k.endswith('.{key}'):")
-                    code.append(f"{indent_str}                return v")
-                    code.append(f"{indent_str}        return None")
-                    code.append("")
+                    if isinstance(value, dict) and value.get("type") == "object" and "properties" in value:
+                        # Nested object - create property that returns another class
+                        nested_class_name = safe_key.title()
+                        code.append(f"{indent_str}    @property")
+                        code.append(f"{indent_str}    def {safe_key}(self):")
+                        code.append(f"{indent_str}        # Handle nested field access with dot notation")
+                        code.append(
+                            f"{indent_str}        if '{key}' in self._data and isinstance(self._data['{key}'], dict):")
+                        code.append(f"{indent_str}            return {nested_class_name}(self._data['{key}'])")
+                        code.append(f"{indent_str}        # Handle flattened CSV data")
+                        code.append(f"{indent_str}        flattened = {{}}")
+                        code.append(f"{indent_str}        prefix = '{key}.'")
+                        code.append(f"{indent_str}        for k, v in self._data.items():")
+                        code.append(f"{indent_str}            if k.startswith(prefix):")
+                        code.append(f"{indent_str}                nested_key = k[len(prefix):]")
+                        code.append(f"{indent_str}                flattened[nested_key] = v")
+                        code.append(f"{indent_str}        return {nested_class_name}(flattened)")
+                        code.append("")
+                    else:
+                        # Simple property (works with both nested JSON and flattened CSV)
+                        code.append(f"{indent_str}    @property")
+                        code.append(f"{indent_str}    def {safe_key}(self):")
+                        code.append(f"{indent_str}        # Try direct access first (JSON format)")
+                        code.append(f"{indent_str}        if '{key}' in self._data:")
+                        code.append(f"{indent_str}            return self._data['{key}']")
+                        code.append(f"{indent_str}        # Try flattened access (CSV format)")
+                        code.append(f"{indent_str}        for k, v in self._data.items():")
+                        code.append(f"{indent_str}            if k.endswith('.{key}'):")
+                        code.append(f"{indent_str}                return v")
+                        code.append(f"{indent_str}        return None")
+                        code.append("")
+            else:
+                # Handle legacy format
+                for key, value in data.items():
+                    # Skip schema metadata fields
+                    if key in ["$id", "$schema", "title", "type"]:
+                        continue
+
+                    safe_key = key.replace(" ", "_").replace("-", "_").replace(".", "_")
+
+                    if isinstance(value, dict) and "type" not in value:
+                        # Nested object - create property that returns another class
+                        nested_class_name = safe_key.title()
+                        code.append(f"{indent_str}    @property")
+                        code.append(f"{indent_str}    def {safe_key}(self):")
+                        code.append(f"{indent_str}        # Handle nested field access with dot notation")
+                        code.append(
+                            f"{indent_str}        if '{key}' in self._data and isinstance(self._data['{key}'], dict):")
+                        code.append(f"{indent_str}            return {nested_class_name}(self._data['{key}'])")
+                        code.append(f"{indent_str}        # Handle flattened CSV data")
+                        code.append(f"{indent_str}        flattened = {{}}")
+                        code.append(f"{indent_str}        prefix = '{key}.'")
+                        code.append(f"{indent_str}        for k, v in self._data.items():")
+                        code.append(f"{indent_str}            if k.startswith(prefix):")
+                        code.append(f"{indent_str}                nested_key = k[len(prefix):]")
+                        code.append(f"{indent_str}                flattened[nested_key] = v")
+                        code.append(f"{indent_str}        return {nested_class_name}(flattened)")
+                        code.append("")
+                    else:
+                        # Simple property (works with both nested JSON and flattened CSV)
+                        code.append(f"{indent_str}    @property")
+                        code.append(f"{indent_str}    def {safe_key}(self):")
+                        code.append(f"{indent_str}        # Try direct access first (JSON format)")
+                        code.append(f"{indent_str}        if '{key}' in self._data:")
+                        code.append(f"{indent_str}            return self._data['{key}']")
+                        code.append(f"{indent_str}        # Try flattened access (CSV format)")
+                        code.append(f"{indent_str}        for k, v in self._data.items():")
+                        code.append(f"{indent_str}            if k.endswith('.{key}'):")
+                        code.append(f"{indent_str}                return v")
+                        code.append(f"{indent_str}        return None")
+                        code.append("")
 
         return "\n".join(code)
 
@@ -214,7 +302,7 @@ def compile_archetype(json_file_path: str, output_file: str = "generated_models.
         "    \"\"\"Create a dataset from CSV dummy data\"\"\"",
         "    if csv_file is None:",
         f"        # Default to dummy CSV file",
-        f"        csv_file = '{csv_file}'",
+        f"        csv_file = 'generated/data.csv'",
         "    ",
         "    if not os.path.exists(csv_file):",
         "        print(f'CSV file not found: {csv_file}')",
@@ -269,6 +357,19 @@ def compile_archetype(json_file_path: str, output_file: str = "generated_models.
     print(f"    dataset = create_dataset()  # Loads CSV dummy data automatically")
     print(f"    print(f'Records: {{len(dataset)}}')")
     print(f"    for record in dataset:")
-    print(f"        print(record.{list(archetype_data.keys())[0] if archetype_data else 'field'})")
+
+    # Get the first actual field from properties, not schema metadata
+    example_field = "field"
+    if archetype_data and "properties" in archetype_data:
+        properties = archetype_data["properties"]
+        if properties:
+            example_field = list(properties.keys())[0]
+    elif archetype_data:
+        # Legacy format - filter out schema metadata
+        data_keys = [k for k in archetype_data.keys() if k not in ["$id", "$schema", "title", "type"]]
+        if data_keys:
+            example_field = data_keys[0]
+
+    print(f"        print(record.{example_field})")
 
     return output_file
