@@ -203,18 +203,6 @@ def init(
 
         client = get_client()
 
-        # Get dataset info
-        datasets = client.get_datasets()
-        package_id = None
-        for dataset in datasets:
-            if dataset.get('datasetId') == dataset_id:
-                package_id = dataset.get('packageId', dataset_id)
-                break
-
-        if not package_id:
-            typer.secho(f"Warning: Could not find package ID for dataset {dataset_id}", fg=typer.colors.YELLOW)
-            package_id = dataset_id
-
         # Create generated directory for SDK files
         os.makedirs("generated", exist_ok=True)
 
@@ -226,6 +214,10 @@ def init(
         # Download archetype
         typer.echo("Downloading archetype...")
         archetype_data = client.get_dataset(dataset_id)
+
+        # Get archetype_id from the $id field in the archetype JSON
+        archetype_id = archetype_data.get('$id', dataset_id)
+        typer.echo(f"Archetype ID: {archetype_id}")
 
         # Save archetype in generated folder
         with open("generated/archetype.json", 'w') as f:
@@ -244,9 +236,9 @@ def init(
 
         # Create project.yml
         project_config = {
-            'name': f'Epsilon Project - {package_id}',
+            'name': f'Epsilon Project - {archetype_id}',
             'dataset_id': dataset_id,
-            'package_id': package_id,
+            'archetype_id': archetype_id,
             'entry_point': 'main.py',
             'epsilon': 1.0,
             'created_at': datetime.now().isoformat()
@@ -405,12 +397,12 @@ def build(
 
         analysis_script = project.get('entry_point', 'main.py')
         dataset_id = project.get('dataset_id')
-        package_id = project.get('package_id')
+        archetype_id = project.get('archetype_id')
 
         os.makedirs(output_dir, exist_ok=True)
 
         print(f"Building analysis package from: {analysis_script}")
-        print(f"Dataset: {dataset_id} ({package_id})")
+        print(f"Dataset: {dataset_id} (archetype: {archetype_id})")
 
         if not os.path.exists(analysis_script):
             typer.secho(f"Script not found: {analysis_script}", fg=typer.colors.RED)
@@ -419,13 +411,13 @@ def build(
         # Create dataset info from project configuration
         datasets = [{
             'dataset_id': dataset_id,
-            'package_id': package_id,
+            'archetype_id': archetype_id,
             'import_path': 'generated.models',
             'function_name': 'create_dataset',
             'archetype_path': 'generated/archetype.json'
         }]
 
-        print(f"Using dataset: {dataset_id} ({package_id})")
+        print(f"Using dataset: {dataset_id} (archetype: {archetype_id})")
 
         # Copy generated folder to build directory
         print("Copying generated files...")
@@ -525,7 +517,7 @@ def build(
         print(f"   Analysis: {manifest['analysis']['name']}")
         print(f"   Script: {manifest['analysis']['script_file']}")
 
-        print(f"   Dataset: {dataset_id} ({package_id})")
+        print(f"   Dataset: {dataset_id} (archetype: {archetype_id})")
         print(f"   Import: from generated.models import create_dataset")
 
         print(f"\n Ready for Server:")
