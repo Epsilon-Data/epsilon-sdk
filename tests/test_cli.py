@@ -87,13 +87,13 @@ class TestCLI:
         # Setup mocks
         mock_exists.return_value = False  # project.yml doesn't exist
         mock_client = Mock()
-        mock_client.get_datasets.return_value = [
-            {'datasetId': 'test_dataset', 'packageId': 'test_package'}
-        ]
+        # get_dataset returns the archetype JSON with $id field
         mock_client.get_dataset.return_value = {
-            'id': 'test_dataset',
-            'name': 'Test Dataset',
-            'schema': {'properties': {'field1': {'type': 'string'}}}
+            '$id': 'test_archetype_id',
+            '$schema': 'https://json-schema.org/draft/2020-12/schema#',
+            'title': 'Test Dataset',
+            'type': 'object',
+            'properties': {'field1': {'type': 'string'}}
         }
         mock_get_client.return_value = mock_client
 
@@ -108,7 +108,6 @@ class TestCLI:
         assert "Project initialized successfully!" in result.output
 
         # Verify calls
-        mock_client.get_datasets.assert_called_once()
         mock_client.get_dataset.assert_called_once_with('test_dataset')
         assert mock_makedirs.call_count >= 1  # Creates generated directory
         assert mock_generate_csv.call_count == 1
@@ -190,7 +189,7 @@ class TestCLI:
         mock_yaml_load.return_value = {
             'entry_point': 'main.py',
             'dataset_id': 'test_dataset',
-            'package_id': 'test_package'
+            'archetype_id': 'test_archetype'
         }
 
         # Mock pip freeze
@@ -203,7 +202,7 @@ class TestCLI:
 
         assert result.exit_code == 0
         assert "Building analysis package from: main.py" in result.output
-        assert "Dataset: test_dataset (test_package)" in result.output
+        assert "Dataset: test_dataset (archetype: test_archetype)" in result.output
         assert "Analysis package built successfully!" in result.output
 
     @patch('sdk.epsilon_cli.os.path.exists')
