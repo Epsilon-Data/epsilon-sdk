@@ -4,7 +4,7 @@
 
 ```bash
 # 0. Install SDK
-pip install -e .
+pip install epsilon-sdk
 
 # 1. Login to Epsilon
 epsilon login
@@ -77,19 +77,21 @@ if __name__ == "__main__":
 - **`epsilon change-server <url>`** - Switch to different server
 - **`epsilon version`** - Show SDK version
 
-## For version upgrade
+## Installation
 
-For patch version upgrade (0.1.0 → 0.1.1)
 ```bash
-bump-my-version bump patch
+pip install epsilon-sdk
 ```
 
-For minor version upgrade (0.1.0 → 0.2.0)
+PyPI: https://pypi.org/project/epsilon-sdk/
+
+## Release (for maintainers)
+
 ```bash
-bump-my-version bump minor
+git checkout main
+git pull origin main
+bump-my-version bump patch   # or minor/major
+git push origin main --tags
 ```
 
-For major version upgrade (0.1.0 → 1.0.0)
-```bash
-bump-my-version bump major
-```
+This triggers GitHub Actions → publishes to PyPI automatically.

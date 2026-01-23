@@ -216,7 +216,9 @@ def init(
         archetype_data = client.get_dataset(dataset_id)
 
         # Get archetype_id from the $id field in the archetype JSON
-        archetype_id = archetype_data.get('$id', dataset_id)
+        # Format is "project_id/archetype_id", we need just the archetype_id
+        full_id = archetype_data.get('$id', dataset_id)
+        archetype_id = full_id.split('/')[-1]
         typer.echo(f"Archetype ID: {archetype_id}")
 
         # Save archetype in generated folder
