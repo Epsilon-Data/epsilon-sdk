@@ -13,7 +13,8 @@ setup(
     packages=find_packages(),
     install_requires=[
         'requests',
-        'typer[all]'
+        'typer[all]',
+        'pyyaml'
     ],
     extras_require={
         'dev': ['bump-my-version']
