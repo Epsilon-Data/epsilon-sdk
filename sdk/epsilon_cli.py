@@ -290,7 +290,6 @@ __pycache__/
         typer.echo("Next steps:")
         typer.echo("  1. Edit main.py to write your analysis")
         typer.echo("  2. Run 'epsilon run' to test locally")
-        typer.echo("  3. Run 'epsilon submit' to execute on server")
 
     except AuthenticationError as e:
         typer.secho(f"Authentication error: {e}", fg=typer.colors.RED)
@@ -356,7 +355,7 @@ def clean():
     """
 
     files_to_clean = ["project.yml", "main.py", ".gitignore"]
-    dirs_to_clean = ["generated"]
+    dirs_to_clean = ["generated", "build"]
 
     cleaned = []
 
@@ -526,6 +525,15 @@ def build(
         print(f"   1. Submit package: {output_dir}/")
         print(f"   2. Server reads: build.yml")
         print(f"   3. Server executes: {script_name}.py")
+
+        # Auto add build folder to git
+        try:
+            subprocess.run(['git', 'add', output_dir], check=True, capture_output=True)
+        except subprocess.CalledProcessError:
+            pass  # Not a git repo or git not available
+        except FileNotFoundError:
+            pass  # git not installed
+
         return output_dir
 
     except Exception as e:
