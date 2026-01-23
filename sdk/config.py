@@ -3,7 +3,7 @@ Configuration for Epsilon SDK
 """
 
 # API Configuration
-BASE_URL = "http://localhost:3334"
+BASE_URL = "https://app.epsilon-data.org"
 TIMEOUT = 30
 
 # API Endpoints
