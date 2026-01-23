@@ -9,7 +9,7 @@ class TestConfig:
 
     def test_base_url(self):
         """Test BASE_URL is set correctly"""
-        assert config.BASE_URL == "http://localhost:3334"
+        assert config.BASE_URL == "https://app.epsilon-data.org"
         assert isinstance(config.BASE_URL, str)
 
     def test_timeout(self):
