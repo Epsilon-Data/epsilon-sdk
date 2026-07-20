@@ -113,6 +113,69 @@ class TestCLI:
         assert mock_generate_csv.call_count == 1
         assert mock_compile_arch.call_count == 1
 
+    @patch('sdk.epsilon_cli.get_client')
+    @patch('sdk.epsilon_cli.os.path.exists')
+    @patch('sdk.epsilon_cli.os.makedirs')
+    @patch('builtins.open')
+    @patch('sdk.epsilon_cli.download_synthetic_data')
+    @patch('sdk.epsilon_cli.generate_csv_dummy_data')
+    @patch('sdk.epsilon_cli.compile_arch')
+    @patch('sdk.epsilon_cli.yaml.dump')
+    def test_init_downloads_synthetic_data(self, mock_yaml_dump, mock_compile_arch,
+                                           mock_generate_csv, mock_download, mock_open,
+                                           mock_makedirs, mock_exists, mock_get_client):
+        """init downloads the synthetic dataset when syntheticDataUrl is present"""
+        mock_exists.return_value = False
+        mock_client = Mock()
+        mock_client.get_dataset.return_value = {
+            '$id': 'test_archetype_id',
+            'type': 'object',
+            'properties': {'field1': {'type': 'string'}},
+            'syntheticDataUrl': 'https://object-store.example/individuals_codebook_p10000.csv'
+        }
+        mock_get_client.return_value = mock_client
+
+        result = runner.invoke(app, ['init', 'test_dataset'])
+
+        assert result.exit_code == 0
+        assert "✓ Created generated/data.csv (synthetic dataset)" in result.output
+        # Downloads from the URL and does NOT fabricate dummy data
+        mock_download.assert_called_once_with(
+            'https://object-store.example/individuals_codebook_p10000.csv',
+            'generated/data.csv'
+        )
+        assert mock_generate_csv.call_count == 0
+
+    @patch('sdk.epsilon_cli.get_client')
+    @patch('sdk.epsilon_cli.os.path.exists')
+    @patch('sdk.epsilon_cli.os.makedirs')
+    @patch('builtins.open')
+    @patch('sdk.epsilon_cli.download_synthetic_data')
+    @patch('sdk.epsilon_cli.generate_csv_dummy_data')
+    @patch('sdk.epsilon_cli.compile_arch')
+    @patch('sdk.epsilon_cli.yaml.dump')
+    def test_init_falls_back_when_download_fails(self, mock_yaml_dump, mock_compile_arch,
+                                                 mock_generate_csv, mock_download, mock_open,
+                                                 mock_makedirs, mock_exists, mock_get_client):
+        """init falls back to dummy data if the synthetic download fails"""
+        mock_exists.return_value = False
+        mock_download.side_effect = Exception("404 Not Found")
+        mock_client = Mock()
+        mock_client.get_dataset.return_value = {
+            '$id': 'test_archetype_id',
+            'type': 'object',
+            'properties': {'field1': {'type': 'string'}},
+            'syntheticDataUrl': 'https://object-store.example/missing.csv'
+        }
+        mock_get_client.return_value = mock_client
+
+        result = runner.invoke(app, ['init', 'test_dataset'])
+
+        assert result.exit_code == 0
+        assert "falling back to dummy data" in result.output
+        mock_download.assert_called_once()
+        assert mock_generate_csv.call_count == 1
+
     @patch('sdk.epsilon_cli.os.path.exists')
     def test_init_command_project_exists(self, mock_exists):
         """Test init command when project already exists"""

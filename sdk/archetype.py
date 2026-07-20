@@ -2,8 +2,44 @@ import json
 import os
 import csv
 import random
+import requests
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Union
+
+
+def download_synthetic_data(url: str, csv_file_path: str, timeout: int = 120) -> str:
+    """
+    Download a synthetic dataset CSV from a public URL (e.g. a Nectar object store)
+    and save it to csv_file_path.
+
+    Used in place of generate_csv_dummy_data when a dataset's archetype provides a
+    syntheticDataUrl, so local runs execute against representative synthetic data
+    instead of random placeholder values.
+
+    Note: the Epsilon access token is intentionally NOT forwarded. The URL is a
+    public object-store link; sending the bearer token to a third-party host would
+    leak it.
+    """
+    # Stream the download so large files are not held fully in memory.
+    with requests.get(url, stream=True, timeout=timeout) as response:
+        response.raise_for_status()
+
+        dest_dir = os.path.dirname(csv_file_path)
+        if dest_dir:
+            os.makedirs(dest_dir, exist_ok=True)
+
+        bytes_written = 0
+        with open(csv_file_path, 'wb') as csvfile:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    csvfile.write(chunk)
+                    bytes_written += len(chunk)
+
+    if bytes_written == 0:
+        raise ValueError(f"Downloaded synthetic dataset is empty: {url}")
+
+    print(f"Downloaded synthetic dataset ({bytes_written:,} bytes) to CSV: {csv_file_path}")
+    return csv_file_path
 
 
 def generate_csv_dummy_data(archetype_data: Dict, csv_file_path: str, num_records: int = 5):

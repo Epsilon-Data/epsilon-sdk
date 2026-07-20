@@ -16,6 +16,7 @@ from .client import APIClient
 from .errors import AuthenticationError, SDKError
 from sdk.archetype import compile_archetype as compile_arch
 from sdk.archetype import generate_csv_dummy_data
+from sdk.archetype import download_synthetic_data
 from . import config as sdk_config
 import re
 import shutil
@@ -226,10 +227,26 @@ def init(
             json.dump(archetype_data, f, indent=2)
         typer.secho("✓ Created generated/archetype.json", fg=typer.colors.GREEN)
 
-        # Generate dummy data in generated folder
-        typer.echo("Generating dummy data...")
-        generate_csv_dummy_data(archetype_data, "generated/data.csv", num_records=10)
-        typer.secho("✓ Created generated/data.csv", fg=typer.colors.GREEN)
+        # Populate generated/data.csv for local testing.
+        # Prefer the real synthetic dataset published for this archetype
+        # (syntheticDataUrl, e.g. on Nectar); fall back to random dummy data.
+        synthetic_url = archetype_data.get("syntheticDataUrl") or archetype_data.get("synthetic_data_url")
+        if synthetic_url:
+            typer.echo(f"Downloading synthetic dataset from {synthetic_url} ...")
+            try:
+                download_synthetic_data(synthetic_url, "generated/data.csv")
+                typer.secho("✓ Created generated/data.csv (synthetic dataset)", fg=typer.colors.GREEN)
+            except Exception as e:
+                typer.secho(
+                    f"⚠ Could not download synthetic dataset ({e}); falling back to dummy data",
+                    fg=typer.colors.YELLOW,
+                )
+                generate_csv_dummy_data(archetype_data, "generated/data.csv", num_records=10)
+                typer.secho("✓ Created generated/data.csv (dummy data)", fg=typer.colors.GREEN)
+        else:
+            typer.echo("Generating dummy data...")
+            generate_csv_dummy_data(archetype_data, "generated/data.csv", num_records=10)
+            typer.secho("✓ Created generated/data.csv (dummy data)", fg=typer.colors.GREEN)
 
         # Compile to models.py in generated folder
         typer.echo("Generating Python models...")
