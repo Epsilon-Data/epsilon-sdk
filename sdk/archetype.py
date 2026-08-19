@@ -2,44 +2,113 @@ import json
 import os
 import csv
 import random
-import requests
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Optional, Union
 
 
-def download_synthetic_data(url: str, csv_file_path: str, timeout: int = 120) -> str:
+def extract_fields_from_archetype(obj: Dict, prefix: str = "") -> List[tuple]:
+    """Extract all fields with their types from JSON Schema structure"""
+    fields = []
+
+    # Handle JSON Schema format
+    if "properties" in obj:
+        # This is a JSON Schema object
+        for key, value in obj["properties"].items():
+            field_name = f"{prefix}.{key}" if prefix else key
+
+            if isinstance(value, dict):
+                if "type" in value:
+                    if value["type"] == "object" and "properties" in value:
+                        # Nested object with properties - recurse
+                        nested_fields = extract_fields_from_archetype(value, field_name)
+                        fields.extend(nested_fields)
+                    else:
+                        # Simple field with type
+                        fields.append((field_name, value["type"]))
+                else:
+                    # Object without explicit type - assume object and recurse
+                    nested_fields = extract_fields_from_archetype(value, field_name)
+                    fields.extend(nested_fields)
+    else:
+        # Handle non-schema format (legacy)
+        for key, value in obj.items():
+            # Skip schema metadata fields
+            if key in ["$id", "$schema", "title", "type"]:
+                continue
+
+            field_name = f"{prefix}.{key}" if prefix else key
+
+            if isinstance(value, dict):
+                if "type" in value:
+                    # It's a field definition
+                    fields.append((field_name, value["type"]))
+                else:
+                    # It's a nested object - recurse
+                    nested_fields = extract_fields_from_archetype(value, field_name)
+                    fields.extend(nested_fields)
+
+    return fields
+
+
+def verify_synthetic_csv(csv_file_path: str, archetype_data: Dict, server_schema_hash: Optional[str]) -> None:
     """
-    Download a synthetic dataset CSV from a public URL (e.g. a Nectar object store)
-    and save it to csv_file_path.
+    Verify that a downloaded synthetic CSV matches the archetype it was
+    initialized against.
 
-    Used in place of generate_csv_dummy_data when a dataset's archetype provides a
-    syntheticDataUrl, so local runs execute against representative synthetic data
-    instead of random placeholder values.
+    The enclave feeds an analysis the exact projection the archetype
+    describes: one CSV column per archetype leaf, named by its dot-joined
+    property path. By checking that the local CSV's header set equals the
+    set of dot paths extracted from the same archetype JSON, we guarantee
+    that code developed against the local file sees the same data shape it
+    will see inside the enclave.
 
-    Note: the Epsilon access token is intentionally NOT forwarded. The URL is a
-    public object-store link; sending the bearer token to a third-party host would
-    leak it.
+    The schema-hash comparison additionally detects the case where the
+    archetype JSON and the dataset were fetched across a re-upload: the
+    hash pinned in the archetype's 'syntheticData' descriptor and the hash
+    the server reported for the download would then disagree, and the user
+    should rerun 'epsilon init' to fetch a consistent pair.
+
+    Raises ValueError on any mismatch.
     """
-    # Stream the download so large files are not held fully in memory.
-    with requests.get(url, stream=True, timeout=timeout) as response:
-        response.raise_for_status()
+    expected = {path for path, _ in extract_fields_from_archetype(archetype_data)}
 
-        dest_dir = os.path.dirname(csv_file_path)
-        if dest_dir:
-            os.makedirs(dest_dir, exist_ok=True)
+    # utf-8-sig strips a UTF-8 BOM from the first header cell if present.
+    with open(csv_file_path, 'r', newline='', encoding='utf-8-sig') as csvfile:
+        reader = csv.reader(csvfile)
+        try:
+            header = next(reader)
+        except StopIteration:
+            raise ValueError(f"Synthetic CSV has no header row: {csv_file_path}")
 
-        bytes_written = 0
-        with open(csv_file_path, 'wb') as csvfile:
-            for chunk in response.iter_content(chunk_size=8192):
-                if chunk:
-                    csvfile.write(chunk)
-                    bytes_written += len(chunk)
+    # Duplicated column names would collapse in the set comparison below and
+    # silently drop cells when the CSV is later read with csv.DictReader.
+    if len(header) != len(set(header)):
+        duplicates = sorted({name for name in header if header.count(name) > 1})
+        raise ValueError(
+            f"Synthetic CSV has duplicated column names: {duplicates}. "
+            "Each archetype column must appear exactly once."
+        )
 
-    if bytes_written == 0:
-        raise ValueError(f"Downloaded synthetic dataset is empty: {url}")
+    actual = set(header)
 
-    print(f"Downloaded synthetic dataset ({bytes_written:,} bytes) to CSV: {csv_file_path}")
-    return csv_file_path
+    if expected != actual:
+        missing_in_csv = sorted(expected - actual)
+        unexpected_in_csv = sorted(actual - expected)
+        raise ValueError(
+            "Synthetic CSV columns do not match the archetype. "
+            f"Missing from CSV: {missing_in_csv}. "
+            f"Unexpected in CSV: {unexpected_in_csv}."
+        )
+
+    descriptor = archetype_data.get('syntheticData') or {}
+    expected_hash = descriptor.get('schemaHash')
+    if expected_hash and server_schema_hash and expected_hash != server_schema_hash:
+        raise ValueError(
+            "Schema hash mismatch: the archetype JSON and the synthetic dataset "
+            "were fetched across a re-upload of the dataset "
+            f"(archetype pinned {expected_hash}, server sent {server_schema_hash}). "
+            "Rerun 'epsilon init' to fetch a consistent pair."
+        )
 
 
 def generate_csv_dummy_data(archetype_data: Dict, csv_file_path: str, num_records: int = 5):
@@ -47,49 +116,6 @@ def generate_csv_dummy_data(archetype_data: Dict, csv_file_path: str, num_record
     Generate CSV dummy data based on archetype structure
     This will be called during 'epsilon archetypes' command
     """
-    def extract_fields_from_archetype(obj: Dict, prefix: str = "") -> List[tuple]:
-        """Extract all fields with their types from JSON Schema structure"""
-        fields = []
-
-        # Handle JSON Schema format
-        if "properties" in obj:
-            # This is a JSON Schema object
-            for key, value in obj["properties"].items():
-                field_name = f"{prefix}.{key}" if prefix else key
-
-                if isinstance(value, dict):
-                    if "type" in value:
-                        if value["type"] == "object" and "properties" in value:
-                            # Nested object with properties - recurse
-                            nested_fields = extract_fields_from_archetype(value, field_name)
-                            fields.extend(nested_fields)
-                        else:
-                            # Simple field with type
-                            fields.append((field_name, value["type"]))
-                    else:
-                        # Object without explicit type - assume object and recurse
-                        nested_fields = extract_fields_from_archetype(value, field_name)
-                        fields.extend(nested_fields)
-        else:
-            # Handle non-schema format (legacy)
-            for key, value in obj.items():
-                # Skip schema metadata fields
-                if key in ["$id", "$schema", "title", "type"]:
-                    continue
-
-                field_name = f"{prefix}.{key}" if prefix else key
-
-                if isinstance(value, dict):
-                    if "type" in value:
-                        # It's a field definition
-                        fields.append((field_name, value["type"]))
-                    else:
-                        # It's a nested object - recurse
-                        nested_fields = extract_fields_from_archetype(value, field_name)
-                        fields.extend(nested_fields)
-
-        return fields
-
     def generate_value_by_type(field_type: str, record_index: int, field_name: str) -> str:
         """Generate CSV-friendly string values based on type"""
         # Use field_name and record_index for consistent variation

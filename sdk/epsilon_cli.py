@@ -16,7 +16,7 @@ from .client import APIClient
 from .errors import AuthenticationError, SDKError
 from sdk.archetype import compile_archetype as compile_arch
 from sdk.archetype import generate_csv_dummy_data
-from sdk.archetype import download_synthetic_data
+from sdk.archetype import verify_synthetic_csv
 from . import config as sdk_config
 import re
 import shutil
@@ -188,7 +188,9 @@ def datasets():
 
 @app.command()
 def init(
-        dataset_id: str = typer.Argument(..., help="ID of the dataset to initialize project with.")
+        dataset_id: str = typer.Argument(..., help="ID of the dataset to initialize project with."),
+        dummy_data: bool = typer.Option(False, "--dummy-data",
+                                        help="Generate random dummy data locally instead of downloading the synthetic dataset.")
 ):
     """
     Initialize a new Epsilon project with a dataset.
@@ -228,23 +230,50 @@ def init(
         typer.secho("✓ Created generated/archetype.json", fg=typer.colors.GREEN)
 
         # Populate generated/data.csv for local testing.
-        # Prefer the real synthetic dataset published for this archetype
-        # (syntheticDataUrl, e.g. on Nectar); fall back to random dummy data.
-        synthetic_url = archetype_data.get("syntheticDataUrl") or archetype_data.get("synthetic_data_url")
-        if synthetic_url:
-            typer.echo(f"Downloading synthetic dataset from {synthetic_url} ...")
+        # Prefer the archetype-scoped synthetic dataset projection served by
+        # the hub; dummy data only on explicit request or when no synthetic
+        # dataset is attached.
+        synthetic_info = None
+        descriptor = archetype_data.get("syntheticData") or {}
+        if dummy_data:
+            typer.echo("Generating random dummy data (--dummy-data)...")
+            generate_csv_dummy_data(archetype_data, "generated/data.csv", num_records=10)
+            typer.secho("✓ Created generated/data.csv (random dummy data)", fg=typer.colors.GREEN)
+        elif descriptor.get("available"):
+            typer.echo("Downloading synthetic dataset...")
             try:
-                download_synthetic_data(synthetic_url, "generated/data.csv")
-                typer.secho("✓ Created generated/data.csv (synthetic dataset)", fg=typer.colors.GREEN)
-            except Exception as e:
+                synthetic_info = client.download_synthetic_data(dataset_id, "generated/data.csv")
+                verify_synthetic_csv("generated/data.csv", archetype_data, synthetic_info.get("schema_hash"))
+            except (SDKError, ValueError) as e:
+                # Remove the rejected download so a failed init leaves no
+                # stale data.csv behind.
+                if os.path.exists("generated/data.csv"):
+                    os.remove("generated/data.csv")
+                typer.secho(f"Synthetic dataset download failed: {e}", fg=typer.colors.RED)
+                typer.echo(f"Use 'epsilon init {dataset_id} --dummy-data' to proceed with random data instead.")
+                raise typer.Exit(1)
+            schema_hash = synthetic_info.get("schema_hash")
+            version = synthetic_info.get("version")
+            if not schema_hash:
                 typer.secho(
-                    f"⚠ Could not download synthetic dataset ({e}); falling back to dummy data",
+                    "Warning: the server response is missing the schema-hash header; "
+                    "the download could not be verified against the archetype's pinned hash.",
                     fg=typer.colors.YELLOW,
                 )
-                generate_csv_dummy_data(archetype_data, "generated/data.csv", num_records=10)
-                typer.secho("✓ Created generated/data.csv (dummy data)", fg=typer.colors.GREEN)
+            detail = "synthetic dataset"
+            if schema_hash:
+                detail += f", schema {schema_hash[:12]}"
+            if version is not None:
+                detail += f", version {version}"
+            typer.secho(f"✓ Created generated/data.csv ({detail})", fg=typer.colors.GREEN)
         else:
-            typer.echo("Generating dummy data...")
+            if archetype_data.get("syntheticDataUrl") or archetype_data.get("synthetic_data_url"):
+                typer.secho(
+                    "Warning: the server returned 'syntheticDataUrl', which this SDK no longer supports "
+                    "— the server is older than this SDK.",
+                    fg=typer.colors.YELLOW,
+                )
+            typer.echo("No synthetic dataset attached to this dataset — generating dummy data.")
             generate_csv_dummy_data(archetype_data, "generated/data.csv", num_records=10)
             typer.secho("✓ Created generated/data.csv (dummy data)", fg=typer.colors.GREEN)
 
@@ -262,6 +291,19 @@ def init(
             'epsilon': 1.0,
             'created_at': datetime.now().isoformat()
         }
+
+        # Pin the synthetic dataset version and schema hash the project was
+        # initialized against (only when synthetic data was downloaded and
+        # the server actually reported the values — never pin nulls).
+        if synthetic_info is not None:
+            raw_version = synthetic_info.get("version")
+            if raw_version is not None:
+                try:
+                    project_config['dataset_version'] = int(raw_version)
+                except (TypeError, ValueError):
+                    project_config['dataset_version'] = raw_version
+            if synthetic_info.get("schema_hash"):
+                project_config['schema_hash'] = synthetic_info.get("schema_hash")
 
         with open("project.yml", 'w') as f:
             yaml.dump(project_config, f, default_flow_style=False, indent=2)
@@ -308,6 +350,10 @@ __pycache__/
         typer.echo("  1. Edit main.py to write your analysis")
         typer.echo("  2. Run 'epsilon run' to test locally")
 
+    except typer.Exit:
+        # Let intentional exits propagate untouched instead of being
+        # re-reported as 'Error: 1' by the generic handler below.
+        raise
     except AuthenticationError as e:
         typer.secho(f"Authentication error: {e}", fg=typer.colors.RED)
         typer.echo("Please run 'epsilon login' to authenticate")
@@ -360,6 +406,8 @@ def run():
 
         typer.secho("✓ Script completed successfully", fg=typer.colors.GREEN)
 
+    except typer.Exit:
+        raise
     except Exception as e:
         typer.secho(f"Error: {str(e)}", fg=typer.colors.RED)
         raise typer.Exit(1)
@@ -553,6 +601,8 @@ def build(
 
         return output_dir
 
+    except typer.Exit:
+        raise
     except Exception as e:
         typer.secho(f" Build failed: {e}", fg=typer.colors.RED)
         traceback.print_exc()

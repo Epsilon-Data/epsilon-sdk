@@ -18,7 +18,7 @@ epsilon init <dataset_id>
 # 4. Write your analysis in main.py
 # (Edit the generated main.py file)
 
-# 5. Test locally with dummy data
+# 5. Test locally with the downloaded synthetic data
 epsilon run
 
 # 6. Build for server deployment
@@ -38,14 +38,26 @@ your-project/
 ├── generated/           #  SDK files (auto-generated)
 │   ├── archetype.json   #  Dataset schema
 │   ├── models.py        #  Python data models
-│   └── data.csv         #  Dummy data (for local testing)
+│   └── data.csv         #  Synthetic dataset (for local testing)
 └── .gitignore          # Git configuration
+```
+
+By default, `epsilon init` downloads the synthetic dataset attached to the
+dataset and verifies that its columns and schema hash match the archetype.
+The dataset version and schema hash it was verified against are pinned in
+`project.yml` (`dataset_version`, `schema_hash`).
+
+To generate random dummy data locally instead (e.g. when no synthetic
+dataset is attached), use:
+
+```bash
+epsilon init <dataset_id> --dummy-data
 ```
 
 ### 2. Development Flow
 1. **`epsilon init <dataset_id>`** - Sets up complete project
 2. **Edit `main.py`** - Write your data analysis
-3. **`epsilon run`** - Test locally with dummy data
+3. **`epsilon run`** - Test locally with the synthetic data
 4. **`epsilon build`** - Package for server deployment
 
 ### 3. Example Analysis

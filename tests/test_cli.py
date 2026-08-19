@@ -1,13 +1,37 @@
 """
 Tests for CLI commands
 """
+import os
 from datetime import datetime, timedelta
 from unittest.mock import Mock, patch
+
+import yaml
 from typer.testing import CliRunner
 from sdk.epsilon_cli import app, get_client
-from sdk.errors import AuthenticationError
+from sdk.errors import AuthenticationError, SDKError
 
 runner = CliRunner()
+
+
+def make_synthetic_archetype():
+    """Archetype JSON with an available synthetic dataset descriptor"""
+    return {
+        '$id': 'test_project/test_archetype_id',
+        '$schema': 'https://json-schema.org/draft/2020-12/schema#',
+        'title': 'Test Dataset',
+        'type': 'object',
+        'properties': {
+            'patient': {
+                'type': 'object',
+                'properties': {
+                    'id': {'type': 'integer'},
+                    'age': {'type': 'integer'}
+                }
+            },
+            'score': {'type': 'number'}
+        },
+        'syntheticData': {'available': True, 'schemaHash': 'abc123def456', 'version': 4}
+    }
 
 
 class TestCLI:
@@ -101,6 +125,7 @@ class TestCLI:
 
         assert result.exit_code == 0
         assert "✓ Created generated/archetype.json" in result.output
+        assert "No synthetic dataset attached" in result.output
         assert "✓ Created generated/data.csv" in result.output
         assert "✓ Created generated/models.py" in result.output
         assert "✓ Created project.yml" in result.output
@@ -114,18 +139,157 @@ class TestCLI:
         assert mock_compile_arch.call_count == 1
 
     @patch('sdk.epsilon_cli.get_client')
-    @patch('sdk.epsilon_cli.os.path.exists')
-    @patch('sdk.epsilon_cli.os.makedirs')
-    @patch('builtins.open')
-    @patch('sdk.epsilon_cli.download_synthetic_data')
-    @patch('sdk.epsilon_cli.generate_csv_dummy_data')
-    @patch('sdk.epsilon_cli.compile_arch')
-    @patch('sdk.epsilon_cli.yaml.dump')
-    def test_init_downloads_synthetic_data(self, mock_yaml_dump, mock_compile_arch,
-                                           mock_generate_csv, mock_download, mock_open,
-                                           mock_makedirs, mock_exists, mock_get_client):
-        """init downloads the synthetic dataset when syntheticDataUrl is present"""
-        mock_exists.return_value = False
+    def test_init_downloads_synthetic_data(self, mock_get_client):
+        """init downloads and verifies the projection when synthetic data is available"""
+        mock_client = Mock()
+        mock_client.get_dataset.return_value = make_synthetic_archetype()
+
+        def fake_download(dataset_id, dest_path):
+            with open(dest_path, 'w', newline='', encoding='utf-8') as f:
+                f.write('patient.id,patient.age,score\n1,42,0.5\n')
+            return {'path': dest_path, 'schema_hash': 'abc123def456', 'version': '4'}
+
+        mock_client.download_synthetic_data.side_effect = fake_download
+        mock_get_client.return_value = mock_client
+
+        with runner.isolated_filesystem():
+            result = runner.invoke(app, ['init', 'test_dataset'])
+
+            assert result.exit_code == 0
+            assert "✓ Created generated/data.csv (synthetic dataset" in result.output
+            assert "abc123def456"[:12] in result.output  # schema hash short-prefix
+            assert "version 4" in result.output
+
+            with open('project.yml') as f:
+                project = yaml.safe_load(f)
+
+        mock_client.download_synthetic_data.assert_called_once_with('test_dataset', 'generated/data.csv')
+        assert project['dataset_version'] == 4
+        assert project['schema_hash'] == 'abc123def456'
+
+    @patch('sdk.epsilon_cli.get_client')
+    def test_init_header_mismatch_fails(self, mock_get_client):
+        """init exits 1 (no silent dummy fallback) when the CSV headers mismatch"""
+        mock_client = Mock()
+        mock_client.get_dataset.return_value = make_synthetic_archetype()
+
+        def fake_download(dataset_id, dest_path):
+            with open(dest_path, 'w', newline='', encoding='utf-8') as f:
+                f.write('patient.id,wrong_col\n1,2\n')
+            return {'path': dest_path, 'schema_hash': 'abc123def456', 'version': '4'}
+
+        mock_client.download_synthetic_data.side_effect = fake_download
+        mock_get_client.return_value = mock_client
+
+        with runner.isolated_filesystem():
+            result = runner.invoke(app, ['init', 'test_dataset'])
+
+            assert result.exit_code == 1
+            # Error names the offending columns
+            assert "patient.age" in result.output
+            assert "wrong_col" in result.output
+            assert "--dummy-data" in result.output
+            # typer.Exit propagates cleanly without a spurious 'Error: 1' line
+            assert "Error: 1" not in result.output
+            # No dummy csv claiming success, no project.yml written,
+            # and the rejected download does not survive as a stale file
+            assert "✓ Created generated/data.csv" not in result.output
+            assert not os.path.exists('project.yml')
+            assert not os.path.exists('generated/data.csv')
+
+    @patch('sdk.epsilon_cli.get_client')
+    def test_init_schema_hash_mismatch_fails(self, mock_get_client):
+        """init exits 1 when the server hash disagrees with the archetype's pinned hash"""
+        mock_client = Mock()
+        mock_client.get_dataset.return_value = make_synthetic_archetype()
+
+        def fake_download(dataset_id, dest_path):
+            with open(dest_path, 'w', newline='', encoding='utf-8') as f:
+                f.write('patient.id,patient.age,score\n1,42,0.5\n')
+            # Server reports a different schema hash than the archetype pinned
+            return {'path': dest_path, 'schema_hash': 'ffff00001111', 'version': '5'}
+
+        mock_client.download_synthetic_data.side_effect = fake_download
+        mock_get_client.return_value = mock_client
+
+        with runner.isolated_filesystem():
+            result = runner.invoke(app, ['init', 'test_dataset'])
+
+            assert result.exit_code == 1
+            assert "Schema hash mismatch" in result.output
+            assert "--dummy-data" in result.output
+            assert not os.path.exists('project.yml')
+
+    @patch('sdk.epsilon_cli.get_client')
+    def test_init_download_error_fails(self, mock_get_client):
+        """init exits 1 with a hint when the download itself fails (e.g. 409)"""
+        mock_client = Mock()
+        mock_client.get_dataset.return_value = make_synthetic_archetype()
+        mock_client.download_synthetic_data.side_effect = SDKError(
+            "Archetype references columns missing from the manifest (missing columns: patient.age)"
+        )
+        mock_get_client.return_value = mock_client
+
+        with runner.isolated_filesystem():
+            result = runner.invoke(app, ['init', 'test_dataset'])
+
+            assert result.exit_code == 1
+            assert "patient.age" in result.output
+            assert "--dummy-data" in result.output
+            assert not os.path.exists('project.yml')
+
+    @patch('sdk.epsilon_cli.get_client')
+    def test_init_missing_response_headers_warns(self, mock_get_client):
+        """Missing schema-hash/version headers warn and are not pinned as nulls"""
+        mock_client = Mock()
+        mock_client.get_dataset.return_value = make_synthetic_archetype()
+
+        def fake_download(dataset_id, dest_path):
+            with open(dest_path, 'w', newline='', encoding='utf-8') as f:
+                f.write('patient.id,patient.age,score\n1,42,0.5\n')
+            return {'path': dest_path, 'schema_hash': None, 'version': None}
+
+        mock_client.download_synthetic_data.side_effect = fake_download
+        mock_get_client.return_value = mock_client
+
+        with runner.isolated_filesystem():
+            result = runner.invoke(app, ['init', 'test_dataset'])
+
+            assert result.exit_code == 0
+            assert "missing the schema-hash header" in result.output
+            assert "✓ Created generated/data.csv (synthetic dataset)" in result.output
+            assert "version None" not in result.output
+
+            with open('project.yml') as f:
+                project = yaml.safe_load(f)
+
+        assert 'dataset_version' not in project
+        assert 'schema_hash' not in project
+
+    @patch('sdk.epsilon_cli.get_client')
+    def test_init_dummy_data_flag(self, mock_get_client):
+        """--dummy-data generates random data and never downloads"""
+        mock_client = Mock()
+        mock_client.get_dataset.return_value = make_synthetic_archetype()
+        mock_get_client.return_value = mock_client
+
+        with runner.isolated_filesystem():
+            result = runner.invoke(app, ['init', 'test_dataset', '--dummy-data'])
+
+            assert result.exit_code == 0
+            assert "✓ Created generated/data.csv (random dummy data)" in result.output
+            assert os.path.exists('generated/data.csv')
+
+            with open('project.yml') as f:
+                project = yaml.safe_load(f)
+
+        mock_client.download_synthetic_data.assert_not_called()
+        assert 'dataset_version' not in project
+        assert 'schema_hash' not in project
+
+    @patch('sdk.epsilon_cli.get_client')
+    def test_init_legacy_synthetic_url_warns(self, mock_get_client):
+        """Old-server archetypes with syntheticDataUrl fall back to dummy data with a warning"""
         mock_client = Mock()
         mock_client.get_dataset.return_value = {
             '$id': 'test_archetype_id',
@@ -135,46 +299,36 @@ class TestCLI:
         }
         mock_get_client.return_value = mock_client
 
-        result = runner.invoke(app, ['init', 'test_dataset'])
+        with runner.isolated_filesystem():
+            result = runner.invoke(app, ['init', 'test_dataset'])
 
-        assert result.exit_code == 0
-        assert "✓ Created generated/data.csv (synthetic dataset)" in result.output
-        # Downloads from the URL and does NOT fabricate dummy data
-        mock_download.assert_called_once_with(
-            'https://object-store.example/individuals_codebook_p10000.csv',
-            'generated/data.csv'
-        )
-        assert mock_generate_csv.call_count == 0
+            assert result.exit_code == 0
+            assert "older than this SDK" in result.output
+            assert "✓ Created generated/data.csv (dummy data)" in result.output
+            assert os.path.exists('generated/data.csv')
+
+        mock_client.download_synthetic_data.assert_not_called()
 
     @patch('sdk.epsilon_cli.get_client')
-    @patch('sdk.epsilon_cli.os.path.exists')
-    @patch('sdk.epsilon_cli.os.makedirs')
-    @patch('builtins.open')
-    @patch('sdk.epsilon_cli.download_synthetic_data')
-    @patch('sdk.epsilon_cli.generate_csv_dummy_data')
-    @patch('sdk.epsilon_cli.compile_arch')
-    @patch('sdk.epsilon_cli.yaml.dump')
-    def test_init_falls_back_when_download_fails(self, mock_yaml_dump, mock_compile_arch,
-                                                 mock_generate_csv, mock_download, mock_open,
-                                                 mock_makedirs, mock_exists, mock_get_client):
-        """init falls back to dummy data if the synthetic download fails"""
-        mock_exists.return_value = False
-        mock_download.side_effect = Exception("404 Not Found")
+    def test_init_legacy_snake_case_url_warns(self, mock_get_client):
+        """Old servers emitting snake_case synthetic_data_url also trigger the warning"""
         mock_client = Mock()
         mock_client.get_dataset.return_value = {
             '$id': 'test_archetype_id',
             'type': 'object',
             'properties': {'field1': {'type': 'string'}},
-            'syntheticDataUrl': 'https://object-store.example/missing.csv'
+            'synthetic_data_url': 'https://object-store.example/individuals_codebook_p10000.csv'
         }
         mock_get_client.return_value = mock_client
 
-        result = runner.invoke(app, ['init', 'test_dataset'])
+        with runner.isolated_filesystem():
+            result = runner.invoke(app, ['init', 'test_dataset'])
 
-        assert result.exit_code == 0
-        assert "falling back to dummy data" in result.output
-        mock_download.assert_called_once()
-        assert mock_generate_csv.call_count == 1
+            assert result.exit_code == 0
+            assert "older than this SDK" in result.output
+            assert "✓ Created generated/data.csv (dummy data)" in result.output
+
+        mock_client.download_synthetic_data.assert_not_called()
 
     @patch('sdk.epsilon_cli.os.path.exists')
     def test_init_command_project_exists(self, mock_exists):
