@@ -6,7 +6,7 @@ from unittest.mock import Mock, patch, MagicMock
 from datetime import datetime, timedelta
 import requests
 from sdk.client import APIClient
-from sdk.errors import AuthenticationError
+from sdk.errors import AuthenticationError, SDKError
 from sdk import config
 from pathlib import Path
 
@@ -166,6 +166,101 @@ class TestAPIClient:
         result = self.client.get_dataset('test_id')
 
         assert result['name'] == 'Test Dataset'
+
+    @patch('sdk.client.requests.request')
+    def test_make_request_conflict_includes_missing_columns(self, mock_request):
+        """409 body with missingColumns surfaces them in the SDKError message"""
+        self.client.access_token = 'test_token'
+        self.client.token_expires_at = datetime.now() + timedelta(hours=1)
+
+        mock_response = Mock()
+        mock_response.ok = False
+        mock_response.json.return_value = {
+            'statusCode': 409,
+            'message': 'Archetype references columns missing from the current manifest',
+            'missingColumns': ['patient.age', 'score']
+        }
+        mock_request.return_value = mock_response
+
+        with pytest.raises(SDKError) as exc_info:
+            self.client._make_request('GET', '/test')
+
+        message = str(exc_info.value)
+        assert 'missing from the current manifest' in message
+        assert 'patient.age' in message
+        assert 'score' in message
+
+    @patch.object(APIClient, '_make_request')
+    def test_download_synthetic_data(self, mock_request, tmp_path):
+        """Test download_synthetic_data streams to file and returns headers"""
+        mock_response = Mock()
+        mock_response.iter_content.return_value = [b'a,b\n', b'1,2\n']
+        mock_response.headers = {
+            'X-Epsilon-Schema-Hash': 'abc123',
+            'X-Epsilon-Dataset-Version': '3'
+        }
+        mock_request.return_value = mock_response
+
+        dest = tmp_path / 'generated' / 'data.csv'
+        result = self.client.download_synthetic_data('test_id', str(dest))
+
+        expected_endpoint = config.ENDPOINTS['synthetic_data'].format(dataset_id='test_id')
+        mock_request.assert_called_once_with('GET', expected_endpoint, stream=True)
+        assert dest.read_bytes() == b'a,b\n1,2\n'
+        assert result == {'path': str(dest), 'schema_hash': 'abc123', 'version': '3'}
+
+    @patch.object(APIClient, '_make_request')
+    def test_download_synthetic_data_empty(self, mock_request, tmp_path):
+        """Test download_synthetic_data rejects an empty response body"""
+        mock_response = Mock()
+        mock_response.iter_content.return_value = []
+        mock_response.headers = {}
+        mock_request.return_value = mock_response
+
+        dest = tmp_path / 'data.csv'
+        with pytest.raises(ValueError, match="empty"):
+            self.client.download_synthetic_data('test_id', str(dest))
+
+        # No empty or partial file left behind
+        assert not dest.exists()
+        assert not (tmp_path / 'data.csv.part').exists()
+
+    @patch.object(APIClient, '_make_request')
+    def test_download_synthetic_data_stream_error(self, mock_request, tmp_path):
+        """Mid-stream network errors surface as SDKError and leave no partial file"""
+        def broken_stream(chunk_size):
+            yield b'a,b\n'
+            raise requests.RequestException("Connection broken")
+
+        mock_response = Mock()
+        mock_response.iter_content.side_effect = broken_stream
+        mock_response.headers = {}
+        mock_request.return_value = mock_response
+
+        dest = tmp_path / 'data.csv'
+        with pytest.raises(SDKError, match="interrupted"):
+            self.client.download_synthetic_data('test_id', str(dest))
+
+        assert not dest.exists()
+        assert not (tmp_path / 'data.csv.part').exists()
+
+    @patch('sdk.client.requests.request')
+    def test_make_request_conflict_malformed_missing_columns(self, mock_request):
+        """Non-list missingColumns in the body still raises SDKError, not TypeError"""
+        self.client.access_token = 'test_token'
+        self.client.token_expires_at = datetime.now() + timedelta(hours=1)
+
+        mock_response = Mock()
+        mock_response.ok = False
+        mock_response.json.return_value = {
+            'statusCode': 409,
+            'message': 'Conflict',
+            'missingColumns': {'unexpected': 'shape'}
+        }
+        mock_request.return_value = mock_response
+
+        with pytest.raises(SDKError, match="Conflict"):
+            self.client._make_request('GET', '/test')
 
     @patch('sdk.client.configparser.ConfigParser')
     @patch('sdk.client.Path.exists')

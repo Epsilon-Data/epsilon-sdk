@@ -10,7 +10,8 @@ TIMEOUT = 30
 ENDPOINTS = {
     "auth": "/api/v1/hub/analysis/auth",
     "datasets": "/api/v1/hub/analysis/datasets",
-    "dataset": "/api/v1/hub/analysis/datasets/{dataset_id}"
+    "dataset": "/api/v1/hub/analysis/datasets/{dataset_id}",
+    "synthetic_data": "/api/v1/hub/analysis/datasets/{dataset_id}/synthetic-data"
 }
 
 # Credentials Configuration

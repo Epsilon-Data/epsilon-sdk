@@ -1,4 +1,5 @@
 import configparser
+import os
 from pathlib import Path
 import requests
 from datetime import datetime, timedelta
@@ -82,6 +83,17 @@ class APIClient:
                 try:
                     error_data = response.json()
                     error_message = error_data.get('message', error_data.get('error', str(error_data)))
+                    # 409 Conflict from the synthetic-data endpoint reports the
+                    # archetype columns missing from the current manifest.
+                    # The body is untrusted input: only format missingColumns
+                    # when it is the documented list shape.
+                    if isinstance(error_data, dict):
+                        missing_columns = error_data.get('missingColumns')
+                        if isinstance(missing_columns, list) and missing_columns:
+                            error_message = (
+                                f"{error_message} "
+                                f"(missing columns: {', '.join(str(c) for c in missing_columns)})"
+                            )
                     raise SDKError(f"{error_message}")
                 except (ValueError, KeyError):
                     # If response is not JSON or doesn't have expected fields
@@ -114,6 +126,49 @@ class APIClient:
         if isinstance(data, list) and data:
             return data[0]
         return data
+
+    def download_synthetic_data(self, dataset_id: str, dest_path: str) -> Dict[str, Any]:
+        """
+        Download the archetype-scoped synthetic dataset projection as CSV.
+
+        Streams the response body to dest_path and returns the destination
+        path together with the schema hash and dataset version the server
+        reported in the response headers.
+        """
+        endpoint = config.ENDPOINTS['synthetic_data'].format(dataset_id=dataset_id)
+        response = self._make_request("GET", endpoint, stream=True)
+
+        dest_dir = os.path.dirname(dest_path)
+        if dest_dir:
+            os.makedirs(dest_dir, exist_ok=True)
+
+        # Stream the download so large files are not held fully in memory.
+        # Write to a temp file and move it into place only on success, so a
+        # failed or interrupted download never leaves a partial dest_path.
+        tmp_path = f"{dest_path}.part"
+        bytes_written = 0
+        try:
+            with open(tmp_path, 'wb') as csvfile:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        csvfile.write(chunk)
+                        bytes_written += len(chunk)
+
+            if bytes_written == 0:
+                raise ValueError(f"Downloaded synthetic dataset is empty: {dest_path}")
+
+            os.replace(tmp_path, dest_path)
+        except requests.RequestException as e:
+            raise SDKError(f"Synthetic dataset download interrupted: {e}")
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+        return {
+            "path": dest_path,
+            "schema_hash": response.headers.get("X-Epsilon-Schema-Hash"),
+            "version": response.headers.get("X-Epsilon-Dataset-Version"),
+        }
 
     @classmethod
     def from_config(cls, config_path: Path):
