@@ -2,6 +2,8 @@
 Tests for CLI commands
 """
 import os
+import tempfile
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from unittest.mock import Mock, patch
 
@@ -11,6 +13,22 @@ from sdk.epsilon_cli import app, get_client
 from sdk.errors import AuthenticationError, SDKError
 
 runner = CliRunner()
+
+
+@contextmanager
+def isolated_filesystem():
+    """Run a block inside a fresh temp cwd, restoring the original afterwards.
+
+    Replaces click's ``CliRunner.isolated_filesystem`` which newer Typer
+    (>=0.27) no longer exposes on its ``CliRunner``. Version-independent.
+    """
+    cwd = os.getcwd()
+    with tempfile.TemporaryDirectory() as tmp:
+        os.chdir(tmp)
+        try:
+            yield tmp
+        finally:
+            os.chdir(cwd)
 
 
 def make_synthetic_archetype():
@@ -152,7 +170,7 @@ class TestCLI:
         mock_client.download_synthetic_data.side_effect = fake_download
         mock_get_client.return_value = mock_client
 
-        with runner.isolated_filesystem():
+        with isolated_filesystem():
             result = runner.invoke(app, ['init', 'test_dataset'])
 
             assert result.exit_code == 0
@@ -181,7 +199,7 @@ class TestCLI:
         mock_client.download_synthetic_data.side_effect = fake_download
         mock_get_client.return_value = mock_client
 
-        with runner.isolated_filesystem():
+        with isolated_filesystem():
             result = runner.invoke(app, ['init', 'test_dataset'])
 
             assert result.exit_code == 1
@@ -212,7 +230,7 @@ class TestCLI:
         mock_client.download_synthetic_data.side_effect = fake_download
         mock_get_client.return_value = mock_client
 
-        with runner.isolated_filesystem():
+        with isolated_filesystem():
             result = runner.invoke(app, ['init', 'test_dataset'])
 
             assert result.exit_code == 1
@@ -230,7 +248,7 @@ class TestCLI:
         )
         mock_get_client.return_value = mock_client
 
-        with runner.isolated_filesystem():
+        with isolated_filesystem():
             result = runner.invoke(app, ['init', 'test_dataset'])
 
             assert result.exit_code == 1
@@ -252,7 +270,7 @@ class TestCLI:
         mock_client.download_synthetic_data.side_effect = fake_download
         mock_get_client.return_value = mock_client
 
-        with runner.isolated_filesystem():
+        with isolated_filesystem():
             result = runner.invoke(app, ['init', 'test_dataset'])
 
             assert result.exit_code == 0
@@ -273,7 +291,7 @@ class TestCLI:
         mock_client.get_dataset.return_value = make_synthetic_archetype()
         mock_get_client.return_value = mock_client
 
-        with runner.isolated_filesystem():
+        with isolated_filesystem():
             result = runner.invoke(app, ['init', 'test_dataset', '--dummy-data'])
 
             assert result.exit_code == 0
@@ -299,7 +317,7 @@ class TestCLI:
         }
         mock_get_client.return_value = mock_client
 
-        with runner.isolated_filesystem():
+        with isolated_filesystem():
             result = runner.invoke(app, ['init', 'test_dataset'])
 
             assert result.exit_code == 0
@@ -321,7 +339,7 @@ class TestCLI:
         }
         mock_get_client.return_value = mock_client
 
-        with runner.isolated_filesystem():
+        with isolated_filesystem():
             result = runner.invoke(app, ['init', 'test_dataset'])
 
             assert result.exit_code == 0
