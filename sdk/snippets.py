@@ -49,9 +49,25 @@ MIN_CELL = $min_cell  # suppression threshold from the dataset card
 '''
 
 _SUPPRESS = '''
-def _suppress(counts):
-    """Replace any count below the disclosure threshold with None."""
-    return dict((k, (v if v >= MIN_CELL else None)) for k, v in counts.items())
+# A field with hundreds of levels must not be reported level by level: the tail
+# is unreleasable and the head is what a reader needs.
+TOP_LEVELS = 15
+
+
+def _levels(counts):
+    """The largest levels that clear the threshold, and how many were held."""
+    kept = [(v, n) for v, n in counts.most_common(TOP_LEVELS) if n >= MIN_CELL]
+    return {
+        "top": [{"value": v, "n": n} for v, n in kept],
+        "levels_not_shown": len(counts) - len(kept),
+    }
+
+
+def _bucket(value, width):
+    """Coarsen a timestamp to the resolution the card says is releasable."""
+    if value is None:
+        return "UNKNOWN"
+    return str(value)[:width] or "UNKNOWN"
 
 '''
 
@@ -69,10 +85,9 @@ $describe_body
     summary = {"unit": "$unit", "n_rows": len(dataset), "fields": {}}
 
     for field, counts in totals.items():
-        summary["fields"][field] = {
-            "distinct": len(counts),
-            "counts": _suppress(counts),
-        }
+        entry = {"distinct": len(counts)}
+        entry.update(_levels(counts))
+        summary["fields"][field] = entry
     for field, values in numeric.items():
         clean = [v for v in values if v is not None]
         if len(clean) < MIN_CELL:
@@ -397,14 +412,33 @@ def _caveat_block(match: Match) -> str:
     return "\n".join(lines)
 
 
+# How far to truncate a timestamp for each releasable bucket.
+_BUCKET_CHARS = {"year": 4, "quarter": 7, "month": 7, "day": 10}
+
+
 def _describe_body(card: Card) -> str:
+    """Emit one accumulation line per leaf, at the resolution it may be released.
+
+    An aggregate-only field is coarsened here rather than reported raw: a
+    HIGH_LEVEL timestamp releasable as a month must never leave the function as
+    a timestamp, and a template that emits one is not enforcing the policy it
+    claims to.
+    """
     lines = []
     for leaf in card.all_leaves():
         expr = accessor(leaf.path)
         if leaf.is_numeric:
-            lines.append('        numeric["{0}"].append(_number({1}))'.format(leaf.path, expr))
+            lines.append('        numeric["{0}"].append(_number({1}))'.format(
+                leaf.path, expr))
+        elif leaf.is_temporal and not leaf.is_detailed:
+            bucket = (leaf.releasable_as or ["year"])[-1]
+            width = _BUCKET_CHARS.get(bucket, 4)
+            lines.append(
+                '        totals["{0}"][_bucket({1}, {2})] += 1'
+                '  # {3}, per the card'.format(leaf.path, expr, width, bucket))
         else:
-            lines.append('        totals["{0}"][str({1})] += 1'.format(leaf.path, expr))
+            lines.append('        totals["{0}"][str({1})] += 1'.format(
+                leaf.path, expr))
     lines.append("")
     return "\n".join(lines)
 

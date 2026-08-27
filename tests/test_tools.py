@@ -222,3 +222,26 @@ class TestSchemas:
         tools = dict((t.spec.name, t) for t in build_tools(box))
         enum = tools["profile_field"].spec.schema["properties"]["field"]["enum"]
         assert "patient.gender" in enum
+
+
+class TestTruncationIsLoud:
+    """A quietly clipped result gets summarised as though it were whole, and
+    the gaps get filled from earlier context. That is how a model ends up
+    reporting figures it never saw."""
+
+    def test_a_short_result_is_untouched(self):
+        from sdk.tools import _truncate
+        assert _truncate("hello") == "hello"
+
+    def test_a_long_result_is_marked_incomplete(self):
+        from sdk.tools import _truncate
+        out = _truncate("x" * 50000, limit=100)
+        assert out.startswith("[INCOMPLETE RESULT]")
+        assert "Do not summarise" in out
+        assert "END OF VISIBLE PORTION" in out
+
+    def test_the_real_sizes_are_stated(self):
+        from sdk.tools import _truncate
+        out = _truncate("x" * 500, limit=100)
+        assert "first 100 of 500" in out
+        assert "400 characters not shown" in out

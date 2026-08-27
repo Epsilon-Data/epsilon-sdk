@@ -53,10 +53,23 @@ class Tool:
 
 
 def _truncate(text: str, limit: int = MAX_RESULT_CHARS) -> str:
+    """Cap a tool result, and say loudly that what remains is incomplete.
+
+    A quiet truncation is worse than a failure. A model handed the first 8,000
+    characters of a 41,000-character result will summarise it as though it were
+    whole, filling the gaps from whatever it read earlier -- which is how
+    fabricated figures end up presented as the output of a run.
+    """
     if len(text) <= limit:
         return text
-    return text[:limit] + "\n... [truncated, {0} characters omitted]".format(
-        len(text) - limit)
+    return (
+        "[INCOMPLETE RESULT] Only the first {0} of {1} characters are shown. "
+        "The rest was NOT computed away -- it exists but you cannot see it. Do "
+        "not summarise, total, or report any field that does not appear below, "
+        "and do not fill the gap from earlier context. Tell the researcher the "
+        "output was too large and narrow the request.\n\n{2}\n\n"
+        "[END OF VISIBLE PORTION -- {3} characters not shown]"
+    ).format(limit, len(text), text[:limit], len(text) - limit)
 
 
 class Toolbox(object):

@@ -113,3 +113,100 @@ class TestWriting:
         path = write(card, match, project_dir=str(tmp_path))
         with open(path, encoding="utf-8") as fh:
             assert compiles(fh.read())
+
+
+class TestDescribeRespectsAccessLevel:
+    """The describe template dumped 275 raw HIGH_LEVEL timestamps with exact
+    counts, which is the policy it claims to enforce being violated by the
+    generator itself."""
+
+    def test_an_aggregate_only_timestamp_is_bucketed(self, card):
+        code = render(card, SPECS_BY_KEY["describe"].evaluate(card))
+        assert "_bucket(record.admissions.time" in code
+        assert 'totals["admissions.time"][str(' not in code
+
+    def test_the_bucket_matches_the_coarsest_releasable_unit(self, card_json):
+        from sdk.card import Card
+        card_json["leaves"]["admissions.time"]["releasableAs"] = ["month"]
+        c = Card.from_json(card_json)
+        code = render(c, SPECS_BY_KEY["describe"].evaluate(c))
+        assert "_bucket(record.admissions.time, 7)" in code  # YYYY-MM
+
+    def test_a_detailed_field_is_not_bucketed(self, card):
+        code = render(card, SPECS_BY_KEY["describe"].evaluate(card))
+        assert 'totals["patient.gender"][str(record.patient.gender)]' in code
+
+    def test_levels_are_capped_not_dumped(self, card):
+        code = render(card, SPECS_BY_KEY["describe"].evaluate(card))
+        assert "TOP_LEVELS" in code
+        assert "levels_not_shown" in code
+
+    def test_output_stays_small_on_a_wide_dataset(self, tmp_path, card):
+        """A 1,472-level code column must not produce a 40,000-char result."""
+        import json as json_mod
+        import subprocess
+        import sys
+        project = tmp_path
+        (project / "generated").mkdir()
+        (project / "generated" / "__init__.py").write_text("", encoding="utf-8")
+        (project / "generated" / "models.py").write_text(MODELS, encoding="utf-8")
+        rows = ["admissions.time,admissions.type,patient.gender,patient.age,"
+                "diagnoses.icd_code,diagnoses.icd_version"]
+        for i in range(3000):
+            rows.append("21{0:02d}-01-01,EW EMER.,M,50,CODE{1},9".format(
+                i % 100, i))          # 3000 distinct codes, 100 distinct years
+        (project / "generated" / "data.csv").write_text(
+            "\n".join(rows) + "\n", encoding="utf-8")
+        path = write(card, SPECS_BY_KEY["describe"].evaluate(card),
+                     project_dir=str(project))
+        proc = subprocess.run(
+            [sys.executable, "-c",
+             "import json,sys; sys.path.insert(0,'.');"
+             "from analyses.describe import main;"
+             "print(json.dumps(main(), default=str))"],
+            cwd=str(project), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        assert proc.returncode == 0, proc.stderr.decode()
+        out = proc.stdout.decode()
+        assert len(out) < 8000, "describe produced %d chars" % len(out)
+        parsed = json_mod.loads(out)
+        assert parsed["fields"]["diagnoses.icd_code"]["levels_not_shown"] > 0
+
+
+# Minimal stand-in for the codegen output, so describe can actually be run.
+MODELS = '''
+import csv, os
+
+
+class Group(object):
+    def __init__(self, row, prefix):
+        self._row, self._prefix = row, prefix
+
+    def __getattr__(self, name):
+        return self._row.get(self._prefix + "." + name)
+
+
+class Record(object):
+    def __init__(self, row):
+        self._row = row
+
+    def __getattr__(self, name):
+        return Group(self._row, name)
+
+
+class DatasetWrapper(object):
+    def __init__(self, rows):
+        self.rows = rows
+
+    def __len__(self):
+        return len(self.rows)
+
+    def __iter__(self):
+        for row in self.rows:
+            yield Record(row)
+
+
+def create_dataset(csv_file=None):
+    path = csv_file or os.path.join("generated", "data.csv")
+    with open(path, newline="", encoding="utf-8") as fh:
+        return DatasetWrapper(list(csv.DictReader(fh)))
+'''
