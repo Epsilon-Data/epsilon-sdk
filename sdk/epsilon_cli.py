@@ -25,6 +25,7 @@ from sdk import checks as checks_mod
 from sdk import explain as explain_mod
 from sdk import snippets as snippets_mod
 from sdk import suggest as suggest_mod
+from sdk import agent as agent_mod
 import re
 import shutil
 import traceback
@@ -916,6 +917,86 @@ def ai_logout():
         if os.environ.get(name):
             typer.secho("Note: {0} is still set in this shell.".format(name),
                         fg=typer.colors.YELLOW)
+
+
+@app.command()
+def chat(
+        message: str = typer.Argument(
+            None, help="A single request. Omit for an interactive session."),
+        quiet: bool = typer.Option(
+            False, "--quiet", help="Hide tool activity."),
+        no_record: bool = typer.Option(
+            False, "--no-record",
+            help="Do not write a transcript to .epsilon/chat/.")
+):
+    """
+    Work with the copilot on your analysis.
+
+    The model drives: it reads the dataset card, checks what is computable,
+    writes and runs code, and iterates. It cannot overrule a feasibility
+    verdict or read a record -- those come from tools, not from the model.
+    """
+    card = _load_card_or_exit()
+
+    try:
+        from sdk import llm
+        provider = llm.get_provider(llm.TIER_A, "the copilot agent")
+    except Exception as exc:
+        typer.secho(str(exc), fg=typer.colors.RED)
+        typer.echo("")
+        typer.echo("Without a model these still work, and decide the same "
+                   "things the agent would:")
+        typer.echo("  epsilon explain   epsilon suggest   epsilon snippet   epsilon check")
+        raise typer.Exit(1)
+
+    session = agent_mod.Session.create(
+        provider, card, project_dir=".", record=not no_record)
+
+    def on_step(step):
+        if quiet:
+            return
+        if step.kind == "tool":
+            typer.secho("  * " + step.label, fg=typer.colors.BRIGHT_BLACK)
+        elif step.kind == "error":
+            typer.secho("  ! " + step.detail, fg=typer.colors.RED)
+
+    def run(text):
+        try:
+            reply = session.ask(text, on_step=on_step)
+        except KeyboardInterrupt:
+            typer.secho("\n(interrupted)", fg=typer.colors.YELLOW)
+            return
+        typer.echo("")
+        typer.echo(reply)
+        typer.echo("")
+
+    if message:
+        run(message)
+        return
+
+    from sdk.llm import config as ai_config
+    cfg = ai_config.load(include_key=False)
+    typer.secho("epsilon copilot", bold=True)
+    typer.secho("  {0} | {1} | tier {2}".format(cfg.provider, cfg.model, cfg.tier),
+                fg=typer.colors.BRIGHT_BLACK)
+    typer.secho("  {0} | synthetic data only | Ctrl-D to exit".format(
+        card.title), fg=typer.colors.BRIGHT_BLACK)
+    if session.transcript_path:
+        typer.secho("  transcript: {0}".format(session.transcript_path),
+                    fg=typer.colors.BRIGHT_BLACK)
+    typer.echo("")
+
+    while True:
+        try:
+            text = typer.prompt("you", prompt_suffix=" > ")
+        except (EOFError, KeyboardInterrupt, typer.Abort):
+            typer.echo("")
+            return
+        if text.strip() in ("exit", "quit", "/exit", "/quit"):
+            return
+        if not text.strip():
+            continue
+        run(text)
 
 
 @app.command()

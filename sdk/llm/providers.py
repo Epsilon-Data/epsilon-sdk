@@ -12,7 +12,8 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
-from sdk.llm.base import LLMError, Message, Provider, Reply, ToolSpec
+from sdk.llm.base import (AgentReply, LLMError, Message, Provider, Reply,
+                          ToolCall, ToolSpec, Turn)
 
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
@@ -89,6 +90,67 @@ class AnthropicProvider(Provider):
                      tool_input=tool_input, stop_reason=body.get("stop_reason"))
 
 
+
+    # -- agent loop ------------------------------------------------------
+
+    def _serialise(self, history):
+        messages = []
+        for turn in history:
+            blocks = []
+            if turn.tool_results:
+                for result in turn.tool_results:
+                    blocks.append({"type": "tool_result",
+                                   "tool_use_id": result.call_id,
+                                   "content": result.content,
+                                   "is_error": result.is_error})
+            if turn.text:
+                blocks.append({"type": "text", "text": turn.text})
+            for call in turn.tool_calls:
+                blocks.append({"type": "tool_use", "id": call.id,
+                               "name": call.name, "input": call.input})
+            if blocks:
+                messages.append({"role": turn.role, "content": blocks})
+        return messages
+
+    def converse(self, system, history, tools=None, max_tokens=4096,
+                 temperature=0.0):
+        payload = {
+            "model": self.model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": self._serialise(history),
+        }
+        if system:
+            payload["system"] = system
+        if tools:
+            payload["tools"] = [
+                {"name": t.name, "description": t.description,
+                 "input_schema": t.schema} for t in tools]
+
+        try:
+            response = requests.post(
+                self.url, json=payload, timeout=self.timeout,
+                headers={"x-api-key": self.api_key,
+                         "anthropic-version": ANTHROPIC_VERSION,
+                         "content-type": "application/json"})
+        except requests.RequestException as exc:
+            raise LLMError("could not reach the Anthropic API: {0}".format(exc))
+        if response.status_code != 200:
+            raise _http_error("Anthropic", response)
+
+        body = response.json()
+        text, calls = [], []
+        for block in body.get("content", []):
+            if block.get("type") == "text":
+                text.append(block.get("text", ""))
+            elif block.get("type") == "tool_use":
+                calls.append(ToolCall(id=block.get("id", ""),
+                                      name=block.get("name", ""),
+                                      input=block.get("input") or {}))
+        return AgentReply(text="".join(text), tool_calls=calls,
+                          stop_reason=body.get("stop_reason"))
+
+
 class OpenAICompatibleProvider(Provider):
     """vLLM, Ollama, llama.cpp, TGI, Together, Groq, OpenRouter, and friends."""
 
@@ -163,6 +225,81 @@ class OpenAICompatibleProvider(Provider):
         return Reply(text=message.get("content") or "", tool_name=tool_name,
                      tool_input=tool_input,
                      stop_reason=choices[0].get("finish_reason"))
+
+
+
+    # -- agent loop ------------------------------------------------------
+
+    def _serialise(self, system, history):
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        for turn in history:
+            for result in turn.tool_results:
+                messages.append({"role": "tool",
+                                 "tool_call_id": result.call_id,
+                                 "name": result.name,
+                                 "content": result.content})
+            if turn.tool_calls:
+                messages.append({
+                    "role": "assistant",
+                    "content": turn.text or None,
+                    "tool_calls": [
+                        {"id": c.id, "type": "function",
+                         "function": {"name": c.name,
+                                      "arguments": json.dumps(c.input)}}
+                        for c in turn.tool_calls]})
+            elif turn.text:
+                messages.append({"role": turn.role, "content": turn.text})
+        return messages
+
+    def converse(self, system, history, tools=None, max_tokens=4096,
+                 temperature=0.0):
+        payload = {
+            "model": self.model,
+            "messages": self._serialise(system, history),
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        if tools:
+            payload["tools"] = [
+                {"type": "function",
+                 "function": {"name": t.name, "description": t.description,
+                              "parameters": t.schema}} for t in tools]
+
+        try:
+            response = requests.post(
+                self.url, json=payload, timeout=self.timeout,
+                headers={"Authorization": "Bearer " + self.api_key,
+                         "Content-Type": "application/json"})
+        except requests.RequestException as exc:
+            raise LLMError("could not reach {0}: {1}".format(self.url, exc))
+        if response.status_code != 200:
+            raise _http_error("The endpoint", response)
+
+        body = response.json()
+        choices = body.get("choices") or []
+        if not choices:
+            raise LLMError("the endpoint returned no choices")
+        message = choices[0].get("message") or {}
+
+        calls = []
+        for i, call in enumerate(message.get("tool_calls") or []):
+            function = call.get("function") or {}
+            raw = function.get("arguments")
+            if isinstance(raw, str):
+                try:
+                    arguments = json.loads(raw)
+                except ValueError:
+                    arguments = {}
+            else:
+                arguments = raw or {}
+            calls.append(ToolCall(
+                id=call.get("id") or "call_{0}".format(i),
+                name=function.get("name", ""), input=arguments))
+
+        return AgentReply(text=message.get("content") or "", tool_calls=calls,
+                          stop_reason=choices[0].get("finish_reason"))
 
 
 def build(config) -> Provider:

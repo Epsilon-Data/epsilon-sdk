@@ -49,6 +49,46 @@ class Reply:
     stop_reason: Optional[str] = None
 
 
+@dataclass
+class ToolCall:
+    """One tool invocation the model asked for."""
+    id: str
+    name: str
+    input: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ToolResult:
+    call_id: str
+    name: str
+    content: str
+    is_error: bool = False
+
+
+@dataclass
+class Turn:
+    """One exchange in an agent conversation, in provider-neutral form.
+
+    A user turn carries either text or the results of tools the assistant
+    called. An assistant turn carries text, tool calls, or both.
+    """
+    role: str
+    text: str = ""
+    tool_calls: List[ToolCall] = field(default_factory=list)
+    tool_results: List[ToolResult] = field(default_factory=list)
+
+
+@dataclass
+class AgentReply:
+    text: str = ""
+    tool_calls: List[ToolCall] = field(default_factory=list)
+    stop_reason: Optional[str] = None
+
+    @property
+    def wants_tools(self) -> bool:
+        return bool(self.tool_calls)
+
+
 class Provider(object):
     """Interface every backend implements."""
 
@@ -59,4 +99,11 @@ class Provider(object):
                  force_tool: Optional[str] = None,
                  max_tokens: int = 2048,
                  temperature: float = 0.0) -> Reply:
+        raise NotImplementedError
+
+    def converse(self, system: str, history: List[Turn],
+                 tools: Optional[List[ToolSpec]] = None,
+                 max_tokens: int = 4096,
+                 temperature: float = 0.0) -> AgentReply:
+        """One step of an agent loop: may return text, tool calls, or both."""
         raise NotImplementedError

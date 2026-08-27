@@ -87,6 +87,27 @@ class TestWriting:
         path = write(card, match, project_dir=str(tmp_path), filename="table1.py")
         assert path.endswith("table1.py")
 
+    def test_a_path_like_filename_is_flattened(self, tmp_path, card):
+        """Agents pass 'analyses/foo.py'; that must not nest a second dir."""
+        match = SPECS_BY_KEY["describe"].evaluate(card)
+        path = write(card, match, project_dir=str(tmp_path),
+                     filename="analyses/foo.py")
+        assert os.path.exists(path)
+        assert path.endswith(os.path.join("analyses", "foo.py"))
+        assert "analyses/analyses" not in path
+
+    def test_an_escaping_filename_cannot_leave_analyses(self, tmp_path, card):
+        match = SPECS_BY_KEY["describe"].evaluate(card)
+        path = write(card, match, project_dir=str(tmp_path),
+                     filename="../../escape.py")
+        assert os.path.exists(path)
+        assert os.path.dirname(path).endswith("analyses")
+
+    def test_an_extension_is_added_when_missing(self, tmp_path, card):
+        match = SPECS_BY_KEY["describe"].evaluate(card)
+        path = write(card, match, project_dir=str(tmp_path), filename="table1")
+        assert path.endswith("table1.py")
+
     def test_written_code_compiles(self, tmp_path, card):
         match = SPECS_BY_KEY["cross_tab"].evaluate(card)
         path = write(card, match, project_dir=str(tmp_path))

@@ -510,7 +510,15 @@ def write(card: Card, match: Match, project_dir: str = ".",
     if not os.path.exists(init_path):
         with open(init_path, "w", encoding="utf-8") as fh:
             fh.write("")
-    path = os.path.join(directory, filename or "{0}.py".format(match.key))
+    # Snippets always land directly in analyses/. Callers -- an agent among
+    # them -- routinely pass "analyses/foo.py", which would otherwise nest a
+    # second analyses/ and fail on the missing directory.
+    name = os.path.basename(filename or "{0}.py".format(match.key))
+    if not name:
+        raise SnippetError("filename is empty")
+    if not name.endswith(".py"):
+        name += ".py"
+    path = os.path.join(directory, name)
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(code)
     return path
