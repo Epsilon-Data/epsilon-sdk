@@ -76,3 +76,94 @@ def mock_archetype():
             }
         }
     }
+
+# -- copilot fixtures -------------------------------------------------------
+
+# Modelled on the live MIMIC-IV demo archetype: six leaves at diagnosis grain,
+# no patient key, and two ICD revisions in one column. The awkward parts are
+# the point -- they are what the catalogue has to refuse.
+CARD_JSON = {
+    "cardVersion": 1,
+    "title": "Test cohort",
+    "datasetId": "ds-1",
+    "archetype": "arch-1",
+    "schemaHash": "4f2a91c0b3de00112233",
+    "datasetVersion": 3,
+    "grain": {
+        "unit": "diagnosis_record",
+        "statement": "One row per diagnosis code.",
+        "rows": 100000,
+        "entityCounts": {"admissions": 275, "patients": 100},
+        "dedupeKey": None,
+        "known": True,
+    },
+    "leaves": {
+        "patient.gender": {
+            "source": "hosp.patients.gender", "type": "categorical",
+            "accessLevel": "DETAILED", "categories": ["M", "F"],
+            "cardinality": 2, "nullRate": 0.0,
+        },
+        "patient.age": {
+            "source": "hosp.patients.anchor_age", "type": "integer",
+            "accessLevel": "DETAILED", "unit": "years", "range": [21, 91],
+            "nullRate": 0.0,
+            "caveats": ["Ages above 89 are recorded as 91."],
+        },
+        "admissions.type": {
+            "source": "hosp.admissions.admission_type", "type": "categorical",
+            "accessLevel": "DETAILED", "cardinality": 9, "nullRate": 0.0,
+        },
+        "admissions.time": {
+            "source": "hosp.admissions.admittime", "type": "timestamp",
+            "accessLevel": "HIGH_LEVEL", "nullRate": 0.0,
+            "releasableAs": ["month", "quarter", "year"],
+            "comparableAcrossEntities": False,
+        },
+        "diagnoses.icd_code": {
+            "source": "hosp.diagnoses_icd.icd_code", "type": "code",
+            "accessLevel": "DETAILED", "cardinality": 1472, "nullRate": 0.0,
+            "codeSystem": {
+                "discriminator": "diagnoses.icd_version",
+                "systems": {"9": "ICD-9-CM", "10": "ICD-10-CM"},
+                "mixed": True, "split": {"9": 0.487, "10": 0.513},
+            },
+        },
+        "diagnoses.icd_version": {
+            "source": "hosp.diagnoses_icd.icd_version", "type": "categorical",
+            "accessLevel": "DETAILED", "categories": ["9", "10"],
+            "cardinality": 2, "nullRate": 0.0,
+        },
+    },
+    "excluded": ["No discharge date, so no length of stay."],
+    "policy": {"minCell": 10, "allowAiProfiling": True},
+}
+
+
+@pytest.fixture
+def card_json():
+    """Raw card dict, safe to mutate in a test."""
+    import copy
+    return copy.deepcopy(CARD_JSON)
+
+
+@pytest.fixture
+def card(card_json):
+    from sdk.card import Card
+    return Card.from_json(card_json)
+
+
+@pytest.fixture
+def unblocked_card(card_json):
+    """The same dataset once the owner grants a key, a duration and real dates."""
+    import copy
+    from sdk.card import Card
+    raw = copy.deepcopy(card_json)
+    raw["grain"].update({"dedupeKey": "patient.pid",
+                         "entityCounts": {"patients": 100}, "rows": 100})
+    raw["leaves"]["patient.pid"] = {
+        "type": "string", "accessLevel": "DETAILED", "nullRate": 0.0}
+    raw["leaves"]["stay.los"] = {
+        "type": "duration", "unit": "days", "accessLevel": "DETAILED",
+        "nullRate": 0.0}
+    raw["leaves"]["admissions.time"]["comparableAcrossEntities"] = True
+    return Card.from_json(raw)

@@ -11,7 +11,8 @@ ENDPOINTS = {
     "auth": "/api/v1/hub/analysis/auth",
     "datasets": "/api/v1/hub/analysis/datasets",
     "dataset": "/api/v1/hub/analysis/datasets/{dataset_id}",
-    "synthetic_data": "/api/v1/hub/analysis/datasets/{dataset_id}/synthetic-data"
+    "synthetic_data": "/api/v1/hub/analysis/datasets/{dataset_id}/synthetic-data",
+    "card": "/api/v1/hub/analysis/datasets/{dataset_id}/card"
 }
 
 # Credentials Configuration

@@ -18,6 +18,12 @@ from sdk.archetype import compile_archetype as compile_arch
 from sdk.archetype import generate_csv_dummy_data
 from sdk.archetype import verify_synthetic_csv
 from . import config as sdk_config
+from sdk import card as card_mod
+from sdk import catalogue as catalogue_mod
+from sdk import checks as checks_mod
+from sdk import explain as explain_mod
+from sdk import snippets as snippets_mod
+from sdk import suggest as suggest_mod
 import re
 import shutil
 import traceback
@@ -277,6 +283,20 @@ def init(
             generate_csv_dummy_data(archetype_data, "generated/data.csv", num_records=10)
             typer.secho("✓ Created generated/data.csv (dummy data)", fg=typer.colors.GREEN)
 
+        # Fetch the dataset card. Optional: older hubs have no such route and
+        # not every owner has authored one, so a miss is normal and the SDK
+        # falls back to describing the archetype alone.
+        card_data = client.get_card(dataset_id)
+        if isinstance(card_data, dict) and card_data:
+            with open("generated/card.json", 'w') as f:
+                json.dump(card_data, f, indent=2)
+            typer.secho("\u2713 Created generated/card.json", fg=typer.colors.GREEN)
+        else:
+            typer.secho(
+                "No dataset card published for this dataset -- 'epsilon explain' "
+                "will describe the archetype alone (types, value domains and the "
+                "grain of a row will be unknown).", fg=typer.colors.YELLOW)
+
         # Compile to models.py in generated folder
         typer.echo("Generating Python models...")
         compile_arch("generated/archetype.json", "generated/models.py")
@@ -444,11 +464,18 @@ def clean():
 
 @app.command()
 def build(
-        output_dir: str = typer.Option("./build", help="Output directory")
+        output_dir: str = typer.Option("./build", help="Output directory"),
+        skip_checks: bool = typer.Option(
+            False, "--skip-checks",
+            help="Package without running the submission checks first.")
 ):
     """
     Build analysis package from project configuration.
     Reads project.yml to get entry point and dataset information.
+
+    Runs the local submission checks first: the package is shipped to the
+    coordinator, so a credential or a raw-record release found here is one that
+    never leaves the machine.
     """
     try:
         # Check if we're in a project directory
@@ -464,6 +491,25 @@ def build(
         analysis_script = project.get('entry_point', 'main.py')
         dataset_id = project.get('dataset_id')
         archetype_id = project.get('archetype_id')
+
+        if not skip_checks:
+            findings = checks_mod.check_project(".")
+            blocking = [f for f in findings if f.blocking]
+            for finding in findings:
+                colour = typer.colors.RED if finding.blocking else typer.colors.YELLOW
+                typer.secho(finding.format(), fg=colour)
+            if blocking:
+                typer.echo("")
+                typer.secho(
+                    "{0} Fix them, or pass --skip-checks to package anyway "
+                    "(the coordinator will apply the same rules).".format(
+                        checks_mod.summarise(findings)), fg=typer.colors.RED)
+                raise typer.Exit(1)
+            if findings:
+                typer.echo("")
+                typer.secho(checks_mod.summarise(findings), fg=typer.colors.YELLOW)
+            else:
+                typer.secho("\u2713 Submission checks passed", fg=typer.colors.GREEN)
 
         os.makedirs(output_dir, exist_ok=True)
 
@@ -607,6 +653,226 @@ def build(
         typer.secho(f" Build failed: {e}", fg=typer.colors.RED)
         traceback.print_exc()
         raise typer.Exit(1)
+
+
+# ---------------------------------------------------------------- copilot --
+
+ai_app = typer.Typer(help="Configure the model the copilot uses. The key is "
+                          "yours: calls go from this machine straight to the "
+                          "endpoint and Epsilon never sees your prompts.")
+app.add_typer(ai_app, name="ai")
+
+
+def _load_card_or_exit():
+    """Load the project card, failing with an actionable message."""
+    try:
+        return card_mod.load_card(".")
+    except card_mod.CardError as exc:
+        typer.secho("Error: {0}".format(exc), fg=typer.colors.RED)
+        raise typer.Exit(1)
+
+
+@app.command()
+def explain():
+    """
+    Explain what this dataset can and cannot answer.
+
+    Reads the dataset card. Needs no API key and makes no network call.
+    """
+    card = _load_card_or_exit()
+    if card.derived:
+        typer.secho(
+            "No dataset card is published for this archetype -- describing it "
+            "from the archetype alone. Types, value domains and the grain of a "
+            "row are unknown.", fg=typer.colors.YELLOW)
+    typer.echo(explain_mod.render(card))
+
+
+@app.command()
+def suggest(
+        question: str = typer.Argument(
+            None, help="A research question. Omit to list everything available."),
+        no_ai: bool = typer.Option(
+            False, "--no-ai", help="Skip the model even if one is configured.")
+):
+    """
+    Show which analyses this dataset supports, and which it does not.
+
+    Feasibility is decided by the catalogue matcher from card facts, never by a
+    model. A configured model only maps your question onto a catalogue entry
+    and phrases the answer.
+    """
+    card = _load_card_or_exit()
+
+    if question is None:
+        typer.echo(suggest_mod.render_catalogue(card))
+        return
+
+    interpretation = {}
+    if not no_ai:
+        try:
+            from sdk import llm
+            if llm.available():
+                provider = llm.get_provider(llm.TIER_B, "mapping your question")
+                interpretation = suggest_mod.interpret(card, question, provider)
+        except Exception as exc:  # never let the model break a working command
+            typer.secho("(model unavailable: {0})".format(exc), fg=typer.colors.YELLOW)
+
+    typer.echo(suggest_mod.render_answer(card, question, interpretation))
+
+
+@app.command()
+def snippet(
+        analysis: str = typer.Argument(..., help="Catalogue key, e.g. 'describe'."),
+        output: str = typer.Option(None, "--output", "-o", help="Filename under analyses/."),
+        show: bool = typer.Option(False, "--show", help="Print the code instead of writing it.")
+):
+    """
+    Generate starter analysis code for one catalogue entry.
+
+    The skeleton is a fixed template parameterised from the card, so
+    suppression and the unit of analysis are structural rather than advisory.
+    """
+    card = _load_card_or_exit()
+    if analysis not in catalogue_mod.SPECS_BY_KEY:
+        typer.secho("Unknown analysis '{0}'.".format(analysis), fg=typer.colors.RED)
+        typer.echo("Available: " + ", ".join(sorted(catalogue_mod.SPECS_BY_KEY)))
+        raise typer.Exit(1)
+
+    match = catalogue_mod.SPECS_BY_KEY[analysis].evaluate(card)
+    if not match.feasible:
+        typer.secho("'{0}' is not available for this dataset.".format(analysis),
+                    fg=typer.colors.RED)
+        for blocker in match.blockers:
+            typer.echo("  " + blocker)
+        if match.unlock:
+            typer.echo("  " + match.unlock)
+        raise typer.Exit(1)
+
+    if show:
+        typer.echo(snippets_mod.render(card, match))
+        return
+
+    path = snippets_mod.write(card, match, project_dir=".", filename=output)
+    typer.secho("Wrote {0}".format(path), fg=typer.colors.GREEN)
+    for warning in match.warnings:
+        typer.secho("  note: " + warning, fg=typer.colors.YELLOW)
+
+
+@app.command()
+def check(
+        strict: bool = typer.Option(
+            False, "--strict", help="Treat warnings as blocking.")
+):
+    """
+    Run the submission checks locally, before building.
+
+    These are the deterministic rules the coordinator applies: no raw records
+    released, no network, no subprocesses, dependencies pinned, no credentials
+    in the packaged tree.
+    """
+    findings = checks_mod.check_project(".")
+    blocking = [f for f in findings if f.blocking]
+
+    for finding in findings:
+        colour = typer.colors.RED if finding.blocking else typer.colors.YELLOW
+        typer.secho(finding.format(), fg=colour)
+
+    if not findings:
+        typer.secho("All checks passed.", fg=typer.colors.GREEN)
+        return
+
+    typer.echo("")
+    typer.echo(checks_mod.summarise(findings))
+    if blocking or (strict and findings):
+        raise typer.Exit(1)
+
+
+@ai_app.command("login")
+def ai_login(
+        provider: str = typer.Option(None, help="anthropic | openai-compatible"),
+        model: str = typer.Option(None, help="Model identifier."),
+        base_url: str = typer.Option(None, help="Endpoint base URL, for self-hosted models."),
+        tier: str = typer.Option(None, help="Capability tier: A, B or C.")
+):
+    """
+    Store the model settings, and the API key in this machine's keyring.
+
+    The key is never written into a project directory: 'epsilon build'
+    packages the project and ships it, so a key there would be an exfiltrated
+    credential.
+    """
+    from sdk.llm import config as ai_config
+
+    current = ai_config.load(include_key=False)
+    provider = provider or typer.prompt("Provider", default=current.provider)
+    if provider not in ai_config.PROVIDERS:
+        typer.secho("Provider must be one of: {0}".format(", ".join(ai_config.PROVIDERS)),
+                    fg=typer.colors.RED)
+        raise typer.Exit(1)
+
+    default_model = current.model or ai_config.DEFAULT_MODELS.get(provider, "")
+    model = model or typer.prompt("Model", default=default_model)
+    if base_url is None and provider == ai_config.PROVIDER_OPENAI_COMPATIBLE:
+        base_url = typer.prompt("Base URL (e.g. http://localhost:11434/v1)",
+                                default=current.base_url or "")
+    tier = tier or typer.prompt("Capability tier (A/B/C)", default=current.tier)
+    if tier not in (ai_config.TIER_A, ai_config.TIER_B, ai_config.TIER_C):
+        typer.secho("Tier must be A, B or C.", fg=typer.colors.RED)
+        raise typer.Exit(1)
+
+    path = ai_config.save(provider, model, base_url, tier)
+    typer.secho("Settings written to {0}".format(path), fg=typer.colors.GREEN)
+
+    api_key = typer.prompt("API key (leave blank to use an environment variable)",
+                           default="", hide_input=True)
+    if api_key:
+        where = ai_config.store_key(api_key)
+        if where == "keyring":
+            typer.secho("Key stored in this machine's keyring.", fg=typer.colors.GREEN)
+        else:
+            typer.secho(
+                "No keyring is available on this machine, so the key was NOT "
+                "saved. Export it instead:\n  export ANTHROPIC_API_KEY=...\n"
+                "or install the optional 'keyring' package.",
+                fg=typer.colors.YELLOW)
+    else:
+        typer.echo("No key stored. Set one of: " + ", ".join(ai_config.ENV_KEYS))
+
+
+@ai_app.command("status")
+def ai_status():
+    """Show which model is configured and where its key comes from."""
+    from sdk.llm import config as ai_config
+
+    cfg = ai_config.load()
+    typer.echo("provider : {0}".format(cfg.provider))
+    typer.echo("model    : {0}".format(cfg.model or "(unset)"))
+    typer.echo("base_url : {0}".format(cfg.base_url or "(default)"))
+    typer.echo("tier     : {0}".format(cfg.tier))
+    if cfg.api_key:
+        typer.secho("key      : found via {0}".format(cfg.key_source),
+                    fg=typer.colors.GREEN)
+    else:
+        typer.secho("key      : not found", fg=typer.colors.YELLOW)
+        typer.echo("           run 'epsilon ai login', or set " + ", ".join(ai_config.ENV_KEYS))
+    typer.echo("")
+    typer.echo("explain, suggest, snippet and check work without a model.")
+
+
+@ai_app.command("logout")
+def ai_logout():
+    """Remove the stored API key from this machine's keyring."""
+    from sdk.llm import config as ai_config
+
+    if ai_config.delete_key():
+        typer.secho("Key removed from the keyring.", fg=typer.colors.GREEN)
+    else:
+        typer.secho("No key was stored in the keyring.", fg=typer.colors.YELLOW)
+    for name in ai_config.ENV_KEYS:
+        if os.environ.get(name):
+            typer.secho("Note: {0} is still set in this shell.".format(name),
+                        fg=typer.colors.YELLOW)
 
 
 @app.command()

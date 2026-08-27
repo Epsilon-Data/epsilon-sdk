@@ -433,7 +433,9 @@ class TestCLI:
         mock_result.stdout = "package1==1.0.0\npackage2==2.0.0"
         mock_subprocess.return_value = mock_result
 
-        result = runner.invoke(app, ['build'])
+        # --skip-checks keeps this test about packaging; the check gate has
+        # its own test that runs in an isolated directory.
+        result = runner.invoke(app, ['build', '--skip-checks'])
 
         assert result.exit_code == 0
         assert "Building analysis package from: main.py" in result.output

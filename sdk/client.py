@@ -127,6 +127,27 @@ class APIClient:
             return data[0]
         return data
 
+    def get_card(self, dataset_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch the dataset card, or None when this server does not serve one.
+
+        The card is optional metadata: an older hub has no such route, and a
+        project whose owner has not authored one has nothing to return. Either
+        way the SDK degrades to describing the archetype alone rather than
+        failing an init. An authentication failure is a different matter and
+        is allowed to propagate.
+        """
+        endpoint = config.ENDPOINTS['card'].format(dataset_id=dataset_id)
+        try:
+            response = self._make_request("GET", endpoint)
+        except AuthenticationError:
+            raise
+        except SDKError:
+            return None
+        try:
+            return response.json()
+        except ValueError:
+            return None
+
     def download_synthetic_data(self, dataset_id: str, dest_path: str) -> Dict[str, Any]:
         """
         Download the archetype-scoped synthetic dataset projection as CSV.

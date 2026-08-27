@@ -17,7 +17,10 @@ setup(
         'pyyaml'
     ],
     extras_require={
-        'dev': ['bump-my-version']
+        'dev': ['bump-my-version'],
+        # Optional. Without it the copilot reads its API key from the
+        # environment instead; nothing else changes.
+        'copilot': ['keyring>=23.0'],
     },
     entry_points={
         'console_scripts': [
