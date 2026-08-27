@@ -103,6 +103,15 @@ class TestDerivation:
         assert card.has_dedupe_key is False
         assert any("no dataset card" in c.lower() for c in card.caveats)
 
+    def test_types_are_never_authoritative_on_a_derived_card(self, mock_archetype):
+        """Two leaves carry a real type from the schema; that is not enough."""
+        card = derive_card(mock_archetype)
+        assert card.leaf("patient.age").type == "integer"
+        assert card.types_known is False
+
+    def test_types_are_authoritative_on_a_published_card(self, card):
+        assert card.types_known is True
+
     def test_id_is_split_into_dataset_and_archetype(self):
         card = derive_card({"$id": "proj-1/arch-9", "properties": {}})
         assert card.dataset_id == "proj-1"

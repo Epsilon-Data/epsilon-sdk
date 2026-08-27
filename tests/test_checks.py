@@ -1,8 +1,11 @@
 """Tests for the local submission checks."""
 import os
 
+import pytest
+
 from sdk.checks import (BLOCK, WARN, check_project, check_requirements,
-                        check_source, scan_secrets, summarise)
+                        check_packaging, check_source, local_modules,
+                        scan_secrets, should_scan_secrets, summarise)
 
 
 def rules(findings):
@@ -149,6 +152,32 @@ class TestSecrets:
         assert scan_secrets("a.py", "x = 1\ntoken = None\n") == []
 
 
+class TestDotfilesAreScanned:
+    """os.path.splitext('.env') == ('.env', ''), so an extension allowlist
+    silently skips exactly the files credentials live in."""
+
+    @pytest.mark.parametrize("name", [
+        ".env", ".env.local", ".envrc", ".netrc", ".npmrc", "credentials"])
+    def test_secret_bearing_filenames_are_selected(self, name):
+        assert should_scan_secrets(name)
+
+    def test_ordinary_dotfiles_are_not(self):
+        assert not should_scan_secrets(".gitignore")
+        assert not should_scan_secrets("data.csv")
+
+    def test_a_key_in_dotenv_blocks(self, tmp_path):
+        (tmp_path / ".env").write_text(
+            "ANTHROPIC_API_KEY=sk-ant-api03-" + "A" * 38 + "\n", encoding="utf-8")
+        findings = check_project(str(tmp_path))
+        assert [f for f in findings if f.blocking], findings
+
+    def test_an_env_file_warns_even_when_it_looks_empty(self, tmp_path):
+        (tmp_path / ".env").write_text("DEBUG=1\n", encoding="utf-8")
+        findings = check_project(str(tmp_path))
+        assert findings
+        assert "environment file" in findings[0].message
+
+
 class TestProjectScan:
     def _project(self, tmp_path, files):
         for name, content in files.items():
@@ -194,3 +223,69 @@ class TestSummary:
         text = summarise(findings)
         assert "1 blocking issue" in text
         assert "1 warning" in text
+
+
+class TestPackaging:
+    """`epsilon build` ships a subset of the project. An import that does not
+    survive it fails inside the enclave, after the queue."""
+
+    def _project(self, tmp_path, files):
+        for name, content in files.items():
+            path = tmp_path / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+        return str(tmp_path)
+
+    def test_local_modules_are_discovered(self, tmp_path):
+        root = self._project(tmp_path, {
+            "helpers.py": "X = 1\n",
+            "analyses/__init__.py": "",
+            "notes/thing.txt": "",
+        })
+        found = local_modules(root)
+        assert "helpers" in found
+        assert "analyses" in found
+        assert "notes" not in found  # no __init__.py
+
+    def test_an_unpackaged_import_blocks(self, tmp_path):
+        root = self._project(tmp_path, {
+            "helpers.py": "X = 1\n",
+            "main.py": "from helpers import X\n",
+        })
+        findings = check_packaging(root, "main.py", {"generated", "analyses"})
+        assert findings and findings[0].blocking
+        assert "helpers" in findings[0].message
+
+    def test_a_packaged_import_is_fine(self, tmp_path):
+        root = self._project(tmp_path, {
+            "analyses/__init__.py": "",
+            "analyses/table.py": "def main():\n    return {}\n",
+            "main.py": "from analyses.table import main\n",
+        })
+        assert check_packaging(root, "main.py", {"generated", "analyses"}) == []
+
+    def test_stdlib_and_third_party_imports_are_ignored(self, tmp_path):
+        root = self._project(tmp_path, {
+            "main.py": "import json\nimport pandas\n"})
+        assert check_packaging(root, "main.py", {"generated", "analyses"}) == []
+
+    def test_imports_inside_packaged_code_are_checked_too(self, tmp_path):
+        root = self._project(tmp_path, {
+            "helpers.py": "X = 1\n",
+            "analyses/__init__.py": "",
+            "analyses/table.py": "from helpers import X\n",
+            "main.py": "from analyses.table import X\n",
+        })
+        findings = check_packaging(root, "main.py", {"generated", "analyses"})
+        assert findings and "helpers" in findings[0].message
+
+    def test_each_missing_module_is_reported_once(self, tmp_path):
+        root = self._project(tmp_path, {
+            "helpers.py": "X = 1\n",
+            "analyses/__init__.py": "",
+            "analyses/a.py": "from helpers import X\n",
+            "analyses/b.py": "from helpers import X\n",
+            "main.py": "from helpers import X\n",
+        })
+        findings = check_packaging(root, "main.py", {"generated", "analyses"})
+        assert len(findings) == 1

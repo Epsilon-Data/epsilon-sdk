@@ -383,7 +383,7 @@ def _unit_note(card: Card, match: Match) -> str:
         return "Rows are collapsed per entity before anything is counted."
     if not card.has_dedupe_key and card.grain.known:
         return ("This archetype has no entity key, so results describe {0}s "
-                "and not entities. Report that denominator.".format(card.grain.unit))
+                "and not entities. Report that denominator.".format(card.grain.label))
     return "Report this denominator in your methods."
 
 

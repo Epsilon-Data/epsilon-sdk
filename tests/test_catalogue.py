@@ -11,8 +11,8 @@ import copy
 import pytest
 
 from sdk.card import Card
-from sdk.catalogue import (BLOCKED, FEASIBLE, SPECS_BY_KEY, blocked, evaluate,
-                           feasible)
+from sdk.catalogue import (BLOCKED, FEASIBLE, SPECS_BY_KEY, OverrideError,
+                           blocked, evaluate, feasible, override)
 
 
 def verdict(card, key):
@@ -145,6 +145,15 @@ class TestUnknownGrain:
         assert match.status == BLOCKED
         assert any("grain of this dataset is unknown" in b for b in match.blockers)
 
+    def test_a_missing_card_is_not_blamed_on_the_archetype(self, mock_archetype):
+        """The fields are granted; it is their types that are unknown."""
+        from sdk.card import derive_card
+        match = verdict(derive_card(mock_archetype), "cross_tab")
+        blockers = " ".join(match.blockers)
+        assert "No dataset card is published" in blockers
+        assert "The fields themselves are granted" in blockers
+        assert "archetype grants no" not in blockers
+
 
 class TestOrdering:
     def test_feasible_entries_come_first(self, card):
@@ -160,3 +169,100 @@ class TestOrdering:
 
     def test_unknown_keys_are_ignored(self, card):
         assert evaluate(card, keys=["nope"]) == []
+
+
+class TestOverrides:
+    """Researcher-chosen fields are validated, never trusted."""
+
+    def test_a_valid_choice_is_applied(self, card):
+        match = override(card, verdict(card, "cross_tab"),
+                         {"rows": "patient.gender", "cols": "admissions.type"})
+        assert match.status == FEASIBLE
+        assert match.params["rows"] == "patient.gender"
+
+    def test_the_wrong_kind_of_field_is_rejected(self, card):
+        with pytest.raises(OverrideError) as exc:
+            override(card, verdict(card, "cross_tab"), {"rows": "patient.age"})
+        assert "categorical or coded field" in str(exc.value)
+
+    def test_an_unknown_field_is_rejected(self, card):
+        with pytest.raises(OverrideError) as exc:
+            override(card, verdict(card, "cross_tab"), {"rows": "patient.nope"})
+        assert "not a field in this dataset" in str(exc.value)
+
+    def test_an_unknown_parameter_is_rejected(self, card):
+        with pytest.raises(OverrideError) as exc:
+            override(card, verdict(card, "cross_tab"), {"nope": "patient.gender"})
+        assert "takes no parameter" in str(exc.value)
+
+    def test_a_blocked_analysis_cannot_be_unblocked(self, card):
+        with pytest.raises(OverrideError) as exc:
+            override(card, verdict(card, "prevalence"), {"outcome": "patient.gender"})
+        assert "not available" in str(exc.value)
+
+    def test_a_wide_column_is_still_refused_when_chosen_explicitly(self, card):
+        match = override(card, verdict(card, "cross_tab"),
+                         {"rows": "diagnoses.icd_code"})
+        assert match.status == BLOCKED
+        assert any("1,472 distinct values" in b for b in match.blockers)
+
+    def test_sparsity_is_rechecked_against_the_chosen_fields(self, card_json):
+        """A choice can be sparser than what the matcher picked for you."""
+        card_json["grain"]["rows"] = 500
+        card_json["leaves"]["vitals.chapter"] = {
+            "type": "categorical", "accessLevel": "DETAILED",
+            "cardinality": 15, "nullRate": 0.0}
+        c = Card.from_json(card_json)
+        auto = verdict(c, "cross_tab")
+        assert auto.status == FEASIBLE          # picks 9 x 2 = 18 cells over 500
+
+        match = override(c, auto, {"rows": "vitals.chapter",
+                                   "cols": "admissions.type"})
+        assert match.status == BLOCKED          # 15 x 9 = 135 cells over 500
+        assert any("expected per cell" in b for b in match.blockers)
+
+    def test_a_roomier_choice_is_allowed(self, card_json):
+        card_json["grain"]["rows"] = 5000
+        card_json["leaves"]["vitals.chapter"] = {
+            "type": "categorical", "accessLevel": "DETAILED",
+            "cardinality": 15, "nullRate": 0.0}
+        c = Card.from_json(card_json)
+        match = override(c, verdict(c, "cross_tab"),
+                         {"rows": "vitals.chapter", "cols": "admissions.type"})
+        assert match.status == FEASIBLE
+
+    def test_caveats_of_chosen_fields_are_surfaced(self, card):
+        """A field the matcher did not pick still brings its warnings along."""
+        auto = verdict(card, "cross_tab")
+        assert "patient.gender" not in auto.params.values()
+        match = override(card, auto, {"rows": "patient.gender"})
+        assert any("51.6% M" in w for w in match.warnings)
+
+    def test_warnings_are_not_duplicated(self, card):
+        match = override(card, verdict(card, "cross_tab"),
+                         {"rows": "patient.gender"})
+        assert len(match.warnings) == len(set(match.warnings))
+
+
+class TestSuggestedCommands:
+    def test_every_command_names_a_real_catalogue_key(self, unblocked_card):
+        for match in evaluate(unblocked_card):
+            if not match.command:
+                continue
+            key = match.command.split()[2]
+            assert key in SPECS_BY_KEY, match.command
+
+    def test_commands_use_the_set_syntax(self, unblocked_card):
+        for match in evaluate(unblocked_card):
+            if match.command and "--" in match.command:
+                assert "--set " in match.command, match.command
+
+    def test_a_printed_command_round_trips(self, card):
+        """Copy-pasting what suggest prints must actually work."""
+        match = verdict(card, "cross_tab")
+        choices = dict(part.split("=", 1)
+                       for part in match.command.split()
+                       if "=" in part)
+        again = override(card, verdict(card, "cross_tab"), choices)
+        assert again.status == FEASIBLE
+        assert again.params == match.params

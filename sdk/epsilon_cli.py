@@ -10,6 +10,7 @@ import json
 import os
 import configparser
 from pathlib import Path
+from typing import List, Optional
 from datetime import datetime
 import yaml
 from .client import APIClient
@@ -494,6 +495,8 @@ def build(
 
         if not skip_checks:
             findings = checks_mod.check_project(".")
+            findings.extend(checks_mod.check_packaging(
+                ".", analysis_script, set(PACKAGED_DIRS)))
             blocking = [f for f in findings if f.blocking]
             for finding in findings:
                 colour = typer.colors.RED if finding.blocking else typer.colors.YELLOW
@@ -536,6 +539,14 @@ def build(
         if os.path.exists("generated"):
             shutil.copytree("generated", os.path.join(output_dir, "generated"), dirs_exist_ok=True)
             print("Copied generated/ folder")
+
+        # Analyses written by 'epsilon snippet' live here and are imported by
+        # the entry point, so they have to travel with it.
+        if os.path.exists(PACKAGED_DIRS[1]):
+            shutil.copytree(PACKAGED_DIRS[1],
+                            os.path.join(output_dir, PACKAGED_DIRS[1]),
+                            dirs_exist_ok=True)
+            print("Copied {0}/ folder".format(PACKAGED_DIRS[1]))
 
         # Generate requirements.txt using pip freeze
         print("Generating requirements.txt...")
@@ -657,6 +668,9 @@ def build(
 
 # ---------------------------------------------------------------- copilot --
 
+# Directories 'epsilon build' ships alongside the entry point.
+PACKAGED_DIRS = ("generated", snippets_mod.ANALYSES_DIR)
+
 ai_app = typer.Typer(help="Configure the model the copilot uses. The key is "
                           "yours: calls go from this machine straight to the "
                           "endpoint and Epsilon never sees your prompts.")
@@ -724,6 +738,9 @@ def suggest(
 @app.command()
 def snippet(
         analysis: str = typer.Argument(..., help="Catalogue key, e.g. 'describe'."),
+        set_: Optional[List[str]] = typer.Option(
+            None, "--set", metavar="NAME=FIELD",
+            help="Choose a field, e.g. --set by=patient.gender. Repeatable."),
         output: str = typer.Option(None, "--output", "-o", help="Filename under analyses/."),
         show: bool = typer.Option(False, "--show", help="Print the code instead of writing it.")
 ):
@@ -732,6 +749,9 @@ def snippet(
 
     The skeleton is a fixed template parameterised from the card, so
     suppression and the unit of analysis are structural rather than advisory.
+
+    Fields are chosen automatically; --set overrides one. Overrides are
+    validated against the card and cannot make a blocked analysis available.
     """
     card = _load_card_or_exit()
     if analysis not in catalogue_mod.SPECS_BY_KEY:
@@ -739,7 +759,22 @@ def snippet(
         typer.echo("Available: " + ", ".join(sorted(catalogue_mod.SPECS_BY_KEY)))
         raise typer.Exit(1)
 
+    choices = {}
+    for item in (set_ or []):
+        if "=" not in item:
+            typer.secho("--set expects NAME=FIELD, got '{0}'.".format(item),
+                        fg=typer.colors.RED)
+            raise typer.Exit(1)
+        name, _, path = item.partition("=")
+        choices[name.strip()] = path.strip()
+
     match = catalogue_mod.SPECS_BY_KEY[analysis].evaluate(card)
+    if choices:
+        try:
+            match = catalogue_mod.override(card, match, choices)
+        except catalogue_mod.OverrideError as exc:
+            typer.secho(str(exc), fg=typer.colors.RED)
+            raise typer.Exit(1)
     if not match.feasible:
         typer.secho("'{0}' is not available for this dataset.".format(analysis),
                     fg=typer.colors.RED)
@@ -772,6 +807,14 @@ def check(
     in the packaged tree.
     """
     findings = checks_mod.check_project(".")
+    if os.path.exists("project.yml"):
+        try:
+            with open("project.yml", 'r') as f:
+                entry = (yaml.safe_load(f) or {}).get('entry_point', 'main.py')
+            findings.extend(checks_mod.check_packaging(
+                ".", entry, set(PACKAGED_DIRS)))
+        except (yaml.YAMLError, OSError):
+            pass
     blocking = [f for f in findings if f.blocking]
 
     for finding in findings:

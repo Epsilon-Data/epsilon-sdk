@@ -108,6 +108,24 @@ class TestSnippet:
         assert "not available" in result.output
         assert "per-entity quantity" in result.output
 
+    def test_set_chooses_fields(self, project, no_model):
+        result = runner.invoke(app, [
+            "snippet", "cross_tab", "--set", "rows=patient.gender",
+            "--set", "cols=admissions.type", "--show"])
+        assert result.exit_code == 0
+        assert "record.patient.gender" in result.output
+
+    def test_set_rejects_a_field_of_the_wrong_kind(self, project, no_model):
+        result = runner.invoke(app, [
+            "snippet", "cross_tab", "--set", "rows=patient.age"])
+        assert result.exit_code == 1
+        assert "categorical or coded field" in result.output
+
+    def test_set_requires_name_equals_field(self, project, no_model):
+        result = runner.invoke(app, ["snippet", "cross_tab", "--set", "rows"])
+        assert result.exit_code == 1
+        assert "NAME=FIELD" in result.output
+
     def test_rejects_an_unknown_analysis(self, project, no_model):
         result = runner.invoke(app, ["snippet", "nonsense"])
         assert result.exit_code == 1

@@ -179,6 +179,11 @@ class Grain:
     known: bool = True
 
     @property
+    def label(self) -> str:
+        """How to name one row in prose. 'unknown' is a state, not a noun."""
+        return "record" if not self.known or self.unit == "unknown" else self.unit
+
+    @property
     def rows_per_entity(self) -> Optional[float]:
         """Mean rows per entity, when the card names an entity count."""
         if not self.rows or not self.entity_counts:
@@ -273,6 +278,21 @@ class Card:
     @property
     def has_dedupe_key(self) -> bool:
         return bool(self.grain.dedupe_key)
+
+    @property
+    def types_known(self) -> bool:
+        """Whether the card says what these fields actually contain.
+
+        A derived card carries the archetype's own types, which collapse to
+        "object" wherever Atlas did not map a data_type -- so almost every leaf
+        arrives as unknown. That is a missing card, not an empty archetype, and
+        the two must not be reported the same way.
+        """
+        # A derived card's types come from the archetype's own JSON Schema,
+        # where a couple of leaves happen to carry integer/string and the rest
+        # collapse to "object". A few accidental types do not make the set
+        # authoritative, so derivation alone settles it.
+        return not self.derived
 
     # -- serialisation ----------------------------------------------------
 

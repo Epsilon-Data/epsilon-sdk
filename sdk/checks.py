@@ -53,6 +53,18 @@ ASSIGNED_SECRET = re.compile(
 SECRET_SCAN_EXTENSIONS = {".py", ".yml", ".yaml", ".json", ".ini", ".cfg", ".toml",
                           ".env", ".txt", ".md", ".sh", ".ipynb"}
 
+# Dotfiles defeat an extension allowlist: os.path.splitext(".env") returns
+# (".env", "") and ".env.local" yields ".local". These are exactly the files
+# credentials live in, so they are matched by name.
+SECRET_SCAN_FILENAMES = {".env", ".envrc", ".netrc", ".npmrc", ".pypirc",
+                         ".pgpass", ".htpasswd", "credentials", ".credentials",
+                         "secrets", ".secrets"}
+
+# Files that hold environment configuration are worth flagging on sight: they
+# are where a key goes, and they have no business in a package that is shipped
+# to the coordinator even when this scan recognises nothing inside.
+ENV_FILE_PREFIX = ".env"
+
 
 @dataclass
 class Finding:
@@ -258,9 +270,25 @@ def check_requirements(path: str, display_path: Optional[str] = None) -> List[Fi
     return findings
 
 
+def should_scan_secrets(path: str) -> bool:
+    """Whether a file is worth reading for credentials."""
+    name = os.path.basename(path).lower()
+    if name in SECRET_SCAN_FILENAMES or name.startswith(ENV_FILE_PREFIX):
+        return True
+    return os.path.splitext(name)[1] in SECRET_SCAN_EXTENSIONS
+
+
 def scan_secrets(path: str, text: str) -> List[Finding]:
     """Look for credentials in anything that would be packaged and shipped."""
     findings = []
+    name = os.path.basename(path).lower()
+    if name.startswith(ENV_FILE_PREFIX) or name in SECRET_SCAN_FILENAMES:
+        findings.append(Finding(
+            "no-secrets", WARN, path, 0,
+            "an environment file is inside the project: 'epsilon build' "
+            "packages this tree and ships it to the coordinator",
+            "keep configuration out of the project directory, and add it to "
+            ".gitignore"))
     for i, line in enumerate(text.splitlines(), start=1):
         for name, pattern in SECRET_PATTERNS:
             if pattern.search(line):
@@ -277,6 +305,89 @@ def scan_secrets(path: str, text: str) -> List[Finding]:
                     "no-secrets", WARN, path, i,
                     "assigns a long literal to a secret-looking name",
                     "if it is a credential, move it out of the project tree"))
+    return findings
+
+
+def local_modules(project_dir: str) -> Set[str]:
+    """Top-level importable names the project itself defines."""
+    names = set()
+    try:
+        entries = os.listdir(project_dir)
+    except OSError:
+        return names
+    for entry in entries:
+        if entry in SKIP_DIRS or entry.startswith("."):
+            continue
+        path = os.path.join(project_dir, entry)
+        if os.path.isdir(path) and os.path.exists(os.path.join(path, "__init__.py")):
+            names.add(entry)
+        elif entry.endswith(".py"):
+            names.add(entry[:-3])
+    return names
+
+
+def _imported_names(source: str) -> Set[str]:
+    names = set()
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return names
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                names.add(alias.name.split(".")[0])
+        elif isinstance(node, ast.ImportFrom):
+            if node.level == 0 and node.module:
+                names.add(node.module.split(".")[0])
+    return names
+
+
+def check_packaging(project_dir: str, entry_point: str,
+                    packaged: Set[str]) -> List[Finding]:
+    """Catch local imports that would not survive being packaged.
+
+    `epsilon build` ships a subset of the project. A helper module the
+    researcher wrote and imported, but which is not in that subset, fails at
+    import time inside the enclave -- after the queue, after the middleware
+    hand-off, with a traceback the researcher cannot see the data behind. It is
+    a cheap thing to catch here.
+    """
+    findings: List[Finding] = []
+    available = local_modules(project_dir)
+    entry_name = os.path.splitext(os.path.basename(entry_point))[0]
+    shipped = set(packaged) | {entry_name}
+
+    to_scan = [entry_point]
+    for name in sorted(packaged):
+        directory = os.path.join(project_dir, name)
+        if os.path.isdir(directory):
+            for root, dirs, files in os.walk(directory):
+                dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+                to_scan.extend(os.path.join(root, f)
+                               for f in files if f.endswith(".py"))
+
+    seen = set()
+    for relative in to_scan:
+        path = os.path.join(project_dir, relative) \
+            if not os.path.isabs(relative) else relative
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                source = fh.read()
+        except (OSError, UnicodeDecodeError):
+            continue
+        for name in _imported_names(source):
+            if name in available and name not in shipped and name not in seen:
+                seen.add(name)
+                findings.append(Finding(
+                    "unpackaged-import", BLOCK,
+                    os.path.relpath(path, project_dir), 0,
+                    "imports local module '{0}', which 'epsilon build' does "
+                    "not package: it would fail at import time in the "
+                    "enclave".format(name),
+                    "move the code into {0}/, or into the entry point".format(
+                        sorted(packaged)[0] if packaged else "the entry point")))
     return findings
 
 
@@ -319,7 +430,7 @@ def check_project(project_dir: str = ".",
         if os.path.basename(path) in ("requirements.txt", "requirements-dev.txt"):
             findings.extend(check_requirements(path, rel))
 
-        if ext in SECRET_SCAN_EXTENSIONS:
+        if should_scan_secrets(path):
             try:
                 with open(path, "r", encoding="utf-8") as fh:
                     text = fh.read()

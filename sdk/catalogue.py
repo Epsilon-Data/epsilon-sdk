@@ -112,6 +112,123 @@ _UNLOCK_DEDUPE = ("Ask the data owner for a pseudonymised entity key -- a "
                   "makes per-entity denominators computable.")
 
 
+# What each named parameter has to be, so an override can be checked rather
+# than trusted. Keys absent here are derived, not chosen.
+PARAM_ROLES = {
+    "outcome": "discrete",
+    "by": "discrete",
+    "rows": "discrete",
+    "cols": "discrete",
+    "value": "numeric",
+    "group": "binary",
+    "event": "binary",
+    "time": "temporal",
+    "duration": "duration",
+}
+
+_ROLE_TESTS = {
+    "discrete": lambda leaf: leaf.is_discrete,
+    "numeric": lambda leaf: leaf.is_numeric,
+    "binary": lambda leaf: leaf.is_discrete and leaf.cardinality == 2,
+    "temporal": lambda leaf: leaf.is_temporal,
+    "duration": lambda leaf: leaf.is_duration,
+}
+
+_ROLE_NAMES = {
+    "discrete": "a categorical or coded field",
+    "numeric": "a numeric field",
+    "binary": "a two-level categorical field",
+    "temporal": "a date or timestamp field",
+    "duration": "a duration field",
+}
+
+
+def _command(key: str, **params) -> str:
+    """The exact command that reproduces a match, in the CLI's own syntax."""
+    parts = ["epsilon snippet", key]
+    for name in sorted(params):
+        parts.append("--set {0}={1}".format(name, params[name]))
+    return " ".join(parts)
+
+
+class OverrideError(Exception):
+    """An explicitly chosen field cannot fill the role it was given."""
+
+
+def override(card: Card, match: Match, choices: Dict[str, str]) -> Match:
+    """Re-parameterise a match with fields the researcher chose.
+
+    Overrides are validated, not trusted: a chosen field still has to be the
+    right kind of thing, and choosing a 1,472-level code column as a stratum
+    still produces an unreleasable table. Nothing here can turn a blocked
+    analysis into a permitted one.
+    """
+    if not match.feasible:
+        raise OverrideError(
+            "'{0}' is not available for this dataset, so its fields cannot be "
+            "chosen.".format(match.key))
+
+    params = dict(match.params)
+    for name, path in choices.items():
+        if name not in params:
+            raise OverrideError(
+                "'{0}' takes no parameter '{1}'. It takes: {2}.".format(
+                    match.key, name, ", ".join(sorted(params)) or "none"))
+        leaf = card.leaf(path)
+        if leaf is None:
+            raise OverrideError(
+                "'{0}' is not a field in this dataset. Available: {1}.".format(
+                    path, ", ".join(sorted(card.leaves))))
+        role = PARAM_ROLES.get(name)
+        if role and not _ROLE_TESTS[role](leaf):
+            raise OverrideError(
+                "{0} must be {1}; {2} is {3}.".format(
+                    name, _ROLE_NAMES[role], path, leaf.type))
+        params[name] = path
+
+    warnings = list(match.warnings) + _leaf_warnings(card, sorted(set(params.values())))
+    blockers = []
+
+    # A stratum with too many levels is unreleasable however it was chosen.
+    for name in ("rows", "cols", "by", "outcome"):
+        path = params.get(name)
+        leaf = card.leaf(path) if path else None
+        if leaf and leaf.cardinality and leaf.cardinality > MAX_STRATA:
+            blockers.append(
+                "{0} has {1:,} distinct values. A table over that many levels "
+                "cannot clear a suppression threshold of {2}.".format(
+                    path, leaf.cardinality, card.policy.min_cell))
+
+    if match.key in ("cross_tab", "composition") and card.grain.rows:
+        cells = 1
+        for name in ("rows", "cols", "by", "outcome"):
+            leaf = card.leaf(params[name]) if params.get(name) else None
+            if leaf and leaf.cardinality:
+                cells *= leaf.cardinality
+        if cells > 1:
+            expected = card.grain.rows / float(cells)
+            if expected < 5:
+                blockers.append(
+                    "Those fields give {0:,} cells over {1:,} rows -- about "
+                    "{2:.1f} expected per cell, below the 5 a chi-square test "
+                    "needs.".format(cells, card.grain.rows, expected))
+
+    seen, deduped = set(), []
+    for warning in warnings:
+        if warning not in seen:
+            seen.add(warning)
+            deduped.append(warning)
+
+    return Match(
+        key=match.key, title=match.title,
+        status=BLOCKED if blockers else FEASIBLE,
+        unit=match.unit, summary=match.summary, params=params,
+        blockers=blockers, warnings=deduped, unlock=match.unlock,
+        command=_command(match.key, **dict(
+            (k, v) for k, v in params.items() if k in PARAM_ROLES)),
+    )
+
+
 def _pick(leaves: List[Leaf], exclude: Optional[List[str]] = None) -> Optional[Leaf]:
     exclude = exclude or []
     for leaf in leaves:
@@ -121,6 +238,18 @@ def _pick(leaves: List[Leaf], exclude: Optional[List[str]] = None) -> Optional[L
 
 
 def _describe_missing(card: Card, want: str) -> str:
+    """Explain a missing requirement -- and do not blame the archetype for it.
+
+    When no card is published the field types are unknown, so nothing matches
+    a typed requirement. Reporting that as "this archetype grants no
+    categorical field" sends the researcher to argue with their data owner
+    about the wrong thing.
+    """
+    if not card.types_known:
+        return ("No dataset card is published, so the type of every field is "
+                "unknown and none can be matched to a {0}. The fields "
+                "themselves are granted ({1}) -- ask the data owner to publish "
+                "a card.".format(want, ", ".join(sorted(card.leaves))))
     return "This archetype grants no {0}. Fields available: {1}.".format(
         want, ", ".join(sorted(card.leaves)) or "none")
 
@@ -133,9 +262,9 @@ def _eval_describe(card: Card) -> Match:
         key="describe",
         title="Cohort description",
         status=FEASIBLE if paths else BLOCKED,
-        unit=card.grain.unit,
+        unit=card.grain.label,
         summary="Counts, ranges and distributions for every granted field, "
-                "reported per {0}.".format(card.grain.unit),
+                "reported per {0}.".format(card.grain.label),
         params={"fields": ", ".join(paths)},
         blockers=[] if paths else ["This archetype grants no fields."],
         warnings=_leaf_warnings(card, paths) + _grain_warning(card),
@@ -180,19 +309,18 @@ def _eval_composition(card: Card) -> Match:
         warnings.insert(0, (
             "This answers a narrower question than prevalence: it describes "
             "{0}s, not entities. State that denominator in your methods."
-        ).format(card.grain.unit))
+        ).format(card.grain.label))
     return Match(
         key="composition",
         title="Composition by stratum",
         status=BLOCKED if blockers else FEASIBLE,
-        unit=card.grain.unit,
+        unit=card.grain.label,
         summary="Share of {0}s with a characteristic, broken down by a "
-                "second field.".format(card.grain.unit),
+                "second field.".format(card.grain.label),
         params={"outcome": outcome.path, "by": stratum.path} if not blockers else {},
         blockers=blockers,
         warnings=warnings + _grain_warning(card),
-        command=None if blockers else "epsilon snippet composition --outcome {0} --by {1}".format(
-            outcome.path, stratum.path),
+        command=None if blockers else _command("composition", outcome=outcome.path, by=stratum.path),
     )
 
 
@@ -224,13 +352,12 @@ def _eval_cross_tab(card: Card) -> Match:
         key="cross_tab",
         title="Cross-tabulation with chi-square",
         status=BLOCKED if blockers else FEASIBLE,
-        unit=card.grain.unit,
+        unit=card.grain.label,
         summary="Association between two categorical fields.",
         params={"rows": a.path, "cols": b.path} if not blockers else {},
         blockers=blockers,
         warnings=warnings,
-        command=None if blockers else "epsilon snippet cross-tab --rows {0} --cols {1}".format(
-            a.path, b.path),
+        command=None if blockers else _command("cross_tab", rows=a.path, cols=b.path),
     )
 
 
@@ -253,14 +380,13 @@ def _eval_group_compare(card: Card) -> Match:
         key="group_compare",
         title="Two-group comparison",
         status=BLOCKED if blockers else FEASIBLE,
-        unit="entity" if card.has_dedupe_key else card.grain.unit,
+        unit="entity" if card.has_dedupe_key else card.grain.label,
         summary="Whether a numeric field differs between two groups.",
         params={"value": value.path, "group": group.path} if not blockers else {},
         blockers=blockers,
         warnings=warnings,
         unlock=_UNLOCK_DEDUPE if not card.has_dedupe_key else None,
-        command=None if blockers else "epsilon snippet group-compare --value {0} --group {1}".format(
-            value.path, group.path),
+        command=None if blockers else _command("group_compare", value=value.path, group=group.path),
     )
 
 
@@ -295,14 +421,14 @@ def _eval_logistic(card: Card) -> Match:
         key="logistic",
         title="Logistic regression",
         status=BLOCKED if blockers else FEASIBLE,
-        unit="entity" if card.has_dedupe_key else card.grain.unit,
+        unit="entity" if card.has_dedupe_key else card.grain.label,
         summary="Association between covariates and a binary outcome.",
         params={"outcome": outcome.path,
                 "covariates": ", ".join(l.path for l in covariates)} if not blockers else {},
         blockers=blockers,
         warnings=warnings,
         unlock=_UNLOCK_DEDUPE if not card.has_dedupe_key else None,
-        command=None if blockers else "epsilon snippet logistic --outcome {0}".format(outcome.path),
+        command=None if blockers else _command("logistic", outcome=outcome.path),
     )
 
 
@@ -364,13 +490,13 @@ def _eval_trend(card: Card) -> Match:
         key="trend",
         title="Trend over time",
         status=BLOCKED if blockers else FEASIBLE,
-        unit=card.grain.unit,
+        unit=card.grain.label,
         summary="A quantity aggregated into time buckets and compared across them.",
         params={"time": temporal.path,
                 "buckets": ", ".join(temporal.releasable_as) or "raw"} if not blockers else {},
         blockers=blockers,
         warnings=warnings + _grain_warning(card),
-        command=None if blockers else "epsilon snippet trend --time {0}".format(temporal.path),
+        command=None if blockers else _command("trend", time=temporal.path),
     )
 
 

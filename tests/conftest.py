@@ -102,6 +102,9 @@ CARD_JSON = {
             "source": "hosp.patients.gender", "type": "categorical",
             "accessLevel": "DETAILED", "categories": ["M", "F"],
             "cardinality": 2, "nullRate": 0.0,
+            "caveats": ["Denormalised onto every diagnosis row. At row level "
+                        "the split is 51.6% M / 48.4% F; across patients it is "
+                        "57% / 43%."],
         },
         "patient.age": {
             "source": "hosp.patients.anchor_age", "type": "integer",
