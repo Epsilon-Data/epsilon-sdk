@@ -56,38 +56,24 @@ class TestExplain:
         assert "epsilon init" in result.output
 
 
-class TestSuggest:
-    def test_lists_the_catalogue_without_a_question(self, project, no_model):
-        result = runner.invoke(app, ["suggest"])
+class TestExplainCatalogue:
+    def test_explain_lists_what_is_computable(self, project, no_model):
+        result = runner.invoke(app, ["explain"])
         assert result.exit_code == 0
         assert "AVAILABLE" in result.output
         assert "NOT AVAILABLE" in result.output
 
-    def test_answers_a_question_without_a_model(self, project, no_model):
-        result = runner.invoke(app, ["suggest", "what is the prevalence of X?"])
-        assert result.exit_code == 0
+    def test_explain_shows_refusals_with_reasons(self, project, no_model):
+        result = runner.invoke(app, ["explain"])
         assert "[NO] Prevalence" in result.output
+        assert "why not:" in result.output
         assert "pseudonymised" in result.output
 
-    def test_no_ai_flag_skips_the_model(self, project, monkeypatch):
-        called = []
-        monkeypatch.setattr("sdk.llm.available", lambda: called.append(1) or True)
-        result = runner.invoke(app, ["suggest", "describe it", "--no-ai"])
+    def test_brief_drops_the_catalogue(self, project, no_model):
+        result = runner.invoke(app, ["explain", "--brief"])
         assert result.exit_code == 0
-        assert called == []
-
-    def test_a_failing_model_does_not_break_the_command(self, project, monkeypatch):
-        import sdk.llm as llm
-        monkeypatch.setattr(llm, "available", lambda: True)
-
-        def boom(*args, **kwargs):
-            raise llm.LLMError("endpoint unreachable")
-
-        monkeypatch.setattr(llm, "get_provider", boom)
-        result = runner.invoke(app, ["suggest", "describe it"])
-        assert result.exit_code == 0
-        assert "model unavailable" in result.output
-        assert "Cohort description" in result.output
+        assert "GRAIN" in result.output
+        assert "AVAILABLE" not in result.output
 
 
 class TestSnippet:
@@ -241,3 +227,23 @@ class TestAiCommands:
             "ai", "login", "--provider", "anthropic", "--model", "m",
             "--tier", "A"], input="secret-key\n")
         assert "ANTHROPIC_API_KEY" in result.output
+
+
+class TestCommandSurface:
+    """The copilot adds four commands, not a drawer of overlapping ones."""
+
+    def test_suggest_was_removed(self):
+        import typer
+        from sdk.epsilon_cli import app
+        assert "suggest" not in typer.main.get_command(app).commands
+
+    def test_the_copilot_commands_are_exactly_these(self):
+        import typer
+        from sdk.epsilon_cli import app
+        commands = set(typer.main.get_command(app).commands)
+        assert {"explain", "snippet", "check", "chat", "ai"} <= commands
+
+    def test_no_module_imports_the_removed_one(self):
+        import pytest as _pytest
+        with _pytest.raises(ImportError):
+            import sdk.suggest  # noqa: F401

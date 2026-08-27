@@ -124,9 +124,9 @@ description of what a row means, what each field contains, and which traps the
 dataset carries. `epsilon init` downloads it to `generated/card.json`.
 
 ```bash
-epsilon explain                       # what this dataset can and cannot answer
-epsilon suggest                       # every analysis available, and what is not
-epsilon suggest "<your question>"     # route one question to a catalogue entry
+epsilon explain                       # the dataset, and every analysis it does
+                                      # and does not support
+epsilon explain --brief               # dataset only
 epsilon snippet <analysis>            # generate starter code under analyses/
 epsilon snippet cross_tab --set rows=patient.gender --set cols=admissions.type
 epsilon check                         # run the submission rules locally
@@ -135,18 +135,17 @@ epsilon check                         # run the submission rules locally
 Fields are chosen for you; `--set` overrides one. Overrides are validated
 against the card -- a field of the wrong kind, or one with too many levels to
 release, is refused -- and cannot turn a blocked analysis into an available
-one. The command `epsilon suggest` prints is exactly the one that reproduces
-it.
+one. The command `epsilon explain` prints is exactly the one that reproduces it.
 
 ### Feasibility is decided in code, not by a model
 
-`epsilon suggest` answers from the card using ordinary Python predicates. A
-model, if you configure one, only maps your question onto a catalogue entry and
-phrases the reply — it cannot overturn a verdict. So the answers are
-reproducible, and **every command above works with no API key at all.**
+`epsilon explain` answers from the card using ordinary Python predicates, and
+`epsilon chat` reaches those same predicates through a tool. A model never
+decides a verdict, only how to say it. So the answers are reproducible, and
+**every command above works with no API key at all.**
 
 The refusals are the useful part. On an archetype with no key back to the
-patient, asking for prevalence gets you:
+patient, prevalence comes back as:
 
 ```
 [NO] Prevalence

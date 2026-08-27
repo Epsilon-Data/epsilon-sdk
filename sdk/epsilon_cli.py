@@ -24,7 +24,6 @@ from sdk import catalogue as catalogue_mod
 from sdk import checks as checks_mod
 from sdk import explain as explain_mod
 from sdk import snippets as snippets_mod
-from sdk import suggest as suggest_mod
 from sdk import agent as agent_mod
 import re
 import shutil
@@ -688,11 +687,15 @@ def _load_card_or_exit():
 
 
 @app.command()
-def explain():
+def explain(
+        brief: bool = typer.Option(
+            False, "--brief", help="Dataset only, without the analysis list.")
+):
     """
-    Explain what this dataset can and cannot answer.
+    Explain what this dataset holds and what can be computed from it.
 
-    Reads the dataset card. Needs no API key and makes no network call.
+    Reads the dataset card. Needs no API key and makes no network call, and
+    the feasibility verdicts are the same ones 'epsilon chat' works from.
     """
     card = _load_card_or_exit()
     if card.derived:
@@ -700,40 +703,10 @@ def explain():
             "No dataset card is published for this archetype -- describing it "
             "from the archetype alone. Types, value domains and the grain of a "
             "row are unknown.", fg=typer.colors.YELLOW)
-    typer.echo(explain_mod.render(card))
-
-
-@app.command()
-def suggest(
-        question: str = typer.Argument(
-            None, help="A research question. Omit to list everything available."),
-        no_ai: bool = typer.Option(
-            False, "--no-ai", help="Skip the model even if one is configured.")
-):
-    """
-    Show which analyses this dataset supports, and which it does not.
-
-    Feasibility is decided by the catalogue matcher from card facts, never by a
-    model. A configured model only maps your question onto a catalogue entry
-    and phrases the answer.
-    """
-    card = _load_card_or_exit()
-
-    if question is None:
-        typer.echo(suggest_mod.render_catalogue(card))
-        return
-
-    interpretation = {}
-    if not no_ai:
-        try:
-            from sdk import llm
-            if llm.available():
-                provider = llm.get_provider(llm.TIER_B, "mapping your question")
-                interpretation = suggest_mod.interpret(card, question, provider)
-        except Exception as exc:  # never let the model break a working command
-            typer.secho("(model unavailable: {0})".format(exc), fg=typer.colors.YELLOW)
-
-    typer.echo(suggest_mod.render_answer(card, question, interpretation))
+    if brief:
+        typer.echo(explain_mod.render(card))
+    else:
+        typer.echo(explain_mod.render_full(card))
 
 
 @app.command()
@@ -910,7 +883,7 @@ def ai_status():
         typer.secho("key      : not found", fg=typer.colors.YELLOW)
         typer.echo("           run 'epsilon ai login', or set " + ", ".join(ai_config.ENV_KEYS))
     typer.echo("")
-    typer.echo("explain, suggest, snippet and check work without a model.")
+    typer.echo("explain, snippet and check work without a model.")
 
 
 @ai_app.command("logout")
@@ -955,7 +928,7 @@ def chat(
         typer.echo("")
         typer.echo("Without a model these still work, and decide the same "
                    "things the agent would:")
-        typer.echo("  epsilon explain   epsilon suggest   epsilon snippet   epsilon check")
+        typer.echo("  epsilon explain   epsilon snippet   epsilon check")
         raise typer.Exit(1)
 
     session = agent_mod.Session.create(

@@ -1,6 +1,6 @@
 """Tests for the briefing renderer."""
 from sdk.card import Card, derive_card
-from sdk.explain import render, render_summary
+from sdk.explain import render, render_catalogue, render_full, render_summary
 
 
 class TestBriefing:
@@ -82,3 +82,45 @@ class TestSummary:
 
     def test_mentions_the_missing_key(self, card):
         assert "no dedupe key" in render_summary(card)
+
+
+class TestCatalogueRendering:
+    """The catalogue listing moved here from the removed `suggest` command:
+    the model-free half was worth keeping, the keyword guessing was not."""
+
+    def test_lists_available_and_unavailable(self, card):
+        text = render_catalogue(card)
+        assert "AVAILABLE (" in text
+        assert "NOT AVAILABLE (" in text
+
+    def test_a_refusal_carries_its_reason(self, card):
+        text = render_catalogue(card)
+        assert "[NO] Prevalence" in text
+        assert "why not:" in text
+
+    def test_a_refusal_carries_its_unlock_path(self, card):
+        assert "unlock:" in render_catalogue(card)
+
+    def test_feasible_entries_show_the_command(self, card):
+        assert "epsilon snippet" in render_catalogue(card)
+
+    def test_notes_are_capped(self, card_json):
+        from sdk.card import Card
+        card_json["leaves"]["patient.age"]["caveats"] = [
+            "caveat {0}".format(i) for i in range(8)]
+        text = render_catalogue(Card.from_json(card_json))
+        assert "more note" in text
+
+    def test_lines_stay_within_a_terminal(self, card):
+        assert max(len(l) for l in render_catalogue(card).splitlines()) <= 100
+
+
+class TestRenderFull:
+    def test_combines_the_briefing_and_the_catalogue(self, card):
+        text = render_full(card)
+        assert "GRAIN" in text
+        assert "AVAILABLE (" in text
+
+    def test_the_briefing_comes_first(self, card):
+        text = render_full(card)
+        assert text.index("GRAIN") < text.index("AVAILABLE (")

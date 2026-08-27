@@ -258,7 +258,7 @@ class TestSuggestedCommands:
                 assert "--set " in match.command, match.command
 
     def test_a_printed_command_round_trips(self, card):
-        """Copy-pasting what suggest prints must actually work."""
+        """Copy-pasting what explain prints must actually work."""
         match = verdict(card, "cross_tab")
         choices = dict(part.split("=", 1)
                        for part in match.command.split()

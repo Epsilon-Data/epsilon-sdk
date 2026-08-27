@@ -1,9 +1,9 @@
 """
 Model access for the copilot.
 
-Everything here is optional. `epsilon explain`, `epsilon suggest` and
+Everything here is optional. `epsilon explain`, `epsilon snippet` and
 `epsilon check` all produce their verdicts without a model configured -- the
-model ranks and phrases, it never decides. `available()` is how callers ask
+model phrases and plans, it never decides. `available()` is how callers ask
 whether the enrichment layer is present before reaching for it.
 """
 from __future__ import annotations
@@ -48,7 +48,7 @@ def get_provider(required_tier: str = TIER_C,
         raise NoModelConfigured(
             "No model is configured, so {0} is unavailable. Run "
             "'epsilon ai login', or set ANTHROPIC_API_KEY. Deterministic "
-            "commands (explain, suggest, snippet, check) work without "
+            "commands (explain, snippet, check) work without "
             "one.".format(feature))
     if not tier_at_least(config.tier, required_tier):
         raise TierTooLow(

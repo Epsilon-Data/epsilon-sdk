@@ -1,15 +1,17 @@
 """
-Render a Dataset Card as a researcher briefing.
+Render a Dataset Card, and what can be computed from it, as one briefing.
 
-Pure formatting over sdk.card -- no network, no model, no API key. `epsilon
-explain` works on a freshly initialised project with nothing configured, which
-is deliberate: onboarding must not depend on the copilot being set up.
+Pure formatting over sdk.card and sdk.catalogue -- no network, no model, no
+API key. `epsilon explain` works on a freshly initialised project with nothing
+configured, which is deliberate: onboarding must not depend on the copilot
+being set up, and the verdicts shown here are the same ones the agent gets.
 """
 from __future__ import annotations
 
 from typing import List, Optional
 
 from sdk.card import Card, HIGH_LEVEL, Leaf
+from sdk.catalogue import Match, evaluate
 
 # Below this many rows per entity the grain is worth stating but not warning
 # about; above it, aggregate statistics are badly distorted by unequal weights.
@@ -223,3 +225,82 @@ def render_summary(card: Card) -> str:
     if not card.has_dedupe_key and card.grain.known:
         bits.append("no dedupe key")
     return " | ".join(bits)
+
+
+# Every caveat is shown when a researcher asks about one analysis; the full
+# listing shows a few and says how many were held back, so the important ones
+# are not lost in a wall of text.
+MAX_NOTES = 4
+
+
+def _render_match(match: Match, indent: str = "  ",
+                  max_notes: Optional[int] = None) -> List[str]:
+    mark = "[OK]" if match.feasible else "[NO]"
+    lines = ["{0}{1} {2}".format(indent, mark, match.title)]
+    body = indent + "     "
+    lines.extend(_bullet(match.summary, body, ""))
+    # Parameters are the auto-chosen fields a snippet would use. They are only
+    # meaningful for something you can actually run.
+    if match.params and match.feasible:
+        for key in sorted(match.params):
+            lines.extend(_bullet(match.params[key], body, key + ": "))
+    lines.append("{0}unit of analysis: {1}".format(body, match.unit))
+    for blocker in match.blockers:
+        lines.extend(_bullet(blocker, body, "why not: "))
+
+    warnings = match.warnings
+    held_back = 0
+    if max_notes is not None and len(warnings) > max_notes:
+        held_back = len(warnings) - max_notes
+        warnings = warnings[:max_notes]
+    for warning in warnings:
+        lines.extend(_bullet(warning, body, "note: "))
+    if held_back:
+        lines.append("{0}... {1} more note{2} (see 'epsilon explain')".format(
+            body, held_back, "" if held_back == 1 else "s"))
+
+    if match.unlock:
+        lines.extend(_bullet(match.unlock, body, "unlock: "))
+    if match.command:
+        lines.append(body + "-> " + match.command)
+    return lines
+
+
+def _bullet(text: str, indent: str, prefix: str, width: int = 76) -> List[str]:
+    words = (prefix + text).split()
+    lines, current = [], indent
+    for word in words:
+        candidate = current + word if current == indent else current + " " + word
+        if len(candidate) > width and current != indent:
+            lines.append(current)
+            current = indent + "  " + word
+        else:
+            current = candidate
+    if current.strip():
+        lines.append(current)
+    return lines
+
+
+def render_catalogue(card: Card) -> str:
+    """The full deterministic listing: what this dataset supports, and what not."""
+    matches = evaluate(card)
+    feasible = [m for m in matches if m.feasible]
+    blocked = [m for m in matches if not m.feasible]
+
+    out = ["", "  " + card.title, ""]
+    out.append("  AVAILABLE ({0})".format(len(feasible)))
+    out.append("")
+    for match in feasible:
+        out.extend(_render_match(match, max_notes=MAX_NOTES))
+        out.append("")
+    out.append("  NOT AVAILABLE ({0})".format(len(blocked)))
+    out.append("")
+    for match in blocked:
+        out.extend(_render_match(match, max_notes=MAX_NOTES))
+        out.append("")
+    return "\n".join(out)
+
+
+def render_full(card: Card) -> str:
+    """The dataset briefing followed by the catalogue verdicts."""
+    return render(card) + "\n" + render_catalogue(card)
