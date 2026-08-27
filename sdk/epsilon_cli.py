@@ -897,6 +897,15 @@ def ai_status():
     if cfg.api_key:
         typer.secho("key      : found via {0}".format(cfg.key_source),
                     fg=typer.colors.GREEN)
+        # An environment variable outranks the keyring, so one left over from a
+        # different endpoint silently sends the wrong credential.
+        if (cfg.key_source or "").startswith("env:"):
+            name = cfg.key_source.split(":", 1)[1]
+            if ai_config._key_from_keyring():
+                typer.secho(
+                    "           WARNING: {0} is shadowing a key stored in your "
+                    "keyring.\n           Run 'unset {0}' to use the stored "
+                    "one.".format(name), fg=typer.colors.YELLOW)
     else:
         typer.secho("key      : not found", fg=typer.colors.YELLOW)
         typer.echo("           run 'epsilon ai login', or set " + ", ".join(ai_config.ENV_KEYS))

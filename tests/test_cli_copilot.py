@@ -196,6 +196,21 @@ class TestAiCommands:
         result = runner.invoke(app, ["ai", "status"])
         assert "env:ANTHROPIC_API_KEY" in result.output
 
+    def test_status_warns_when_an_env_var_shadows_the_keyring(self, monkeypatch):
+        from sdk.llm import config as ai_config
+        monkeypatch.setenv("EPSILON_LLM_API_KEY", "ollama")
+        monkeypatch.setattr(ai_config, "_key_from_keyring", lambda: "sk-stored")
+        result = runner.invoke(app, ["ai", "status"])
+        assert "shadowing a key stored in your keyring" in result.output
+        assert "unset EPSILON_LLM_API_KEY" in result.output
+
+    def test_status_is_quiet_when_nothing_is_shadowed(self, monkeypatch):
+        from sdk.llm import config as ai_config
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-real")
+        monkeypatch.setattr(ai_config, "_key_from_keyring", lambda: None)
+        result = runner.invoke(app, ["ai", "status"])
+        assert "shadowing" not in result.output
+
     def test_login_rejects_an_unknown_provider(self):
         result = runner.invoke(app, ["ai", "login", "--provider", "mystery"])
         assert result.exit_code == 1

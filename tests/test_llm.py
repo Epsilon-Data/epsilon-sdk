@@ -358,4 +358,41 @@ class TestOpenAIProvider:
         with pytest.raises(LLMError) as exc:
             provider.complete("sys", [Message("user", "hi")])
         assert "rejected the API key" in str(exc.value)
-        assert "epsilon ai login" in str(exc.value)
+        assert "epsilon ai status" in str(exc.value)
+
+
+class TestAuthErrorNamesTheSource:
+    """A 401 that does not say which key it used sends people hunting."""
+
+    def _unauthorised(self):
+        return FakeResponse(401, {"error": {"message": "Incorrect API key"}})
+
+    def test_an_env_key_is_named_with_the_fix(self, monkeypatch):
+        monkeypatch.setattr("sdk.llm.providers.requests.post",
+                            lambda *a, **k: self._unauthorised())
+        provider = OpenAICompatibleProvider(
+            "ollama", "gpt-4o", "https://api.openai.com/v1",
+            key_source="env:EPSILON_LLM_API_KEY")
+        with pytest.raises(LLMError) as exc:
+            provider.complete("sys", [Message("user", "hi")])
+        message = str(exc.value)
+        assert "came from env:EPSILON_LLM_API_KEY" in message
+        assert "unset EPSILON_LLM_API_KEY" in message
+        assert "takes precedence over the keyring" in message
+
+    def test_a_keyring_key_is_named_without_the_unset_hint(self, monkeypatch):
+        monkeypatch.setattr("sdk.llm.providers.requests.post",
+                            lambda *a, **k: self._unauthorised())
+        provider = OpenAICompatibleProvider(
+            "sk-real", "gpt-4o", "https://api.openai.com/v1",
+            key_source="keyring")
+        with pytest.raises(LLMError) as exc:
+            provider.complete("sys", [Message("user", "hi")])
+        message = str(exc.value)
+        assert "came from keyring" in message
+        assert "unset" not in message
+
+    def test_build_passes_the_source_through(self):
+        cfg = ai_config.AIConfig(provider="openai", model="gpt-4o",
+                                 api_key="k", key_source="env:OPENAI_API_KEY")
+        assert build(cfg).key_source == "env:OPENAI_API_KEY"

@@ -20,7 +20,7 @@ ANTHROPIC_VERSION = "2023-06-01"
 DEFAULT_TIMEOUT = 120
 
 
-def _http_error(provider: str, response) -> LLMError:
+def _http_error(provider: str, response, key_source: Optional[str] = None) -> LLMError:
     detail = ""
     try:
         body = response.json()
@@ -28,9 +28,20 @@ def _http_error(provider: str, response) -> LLMError:
     except ValueError:
         detail = (response.text or "")[:300]
     if response.status_code in (401, 403):
+        # Naming the source matters more than it looks: an environment
+        # variable left over from a different endpoint outranks the keyring and
+        # silently sends the wrong credential.
+        where = " The key came from {0}.".format(key_source) if key_source else ""
+        hint = ""
+        if key_source and key_source.startswith("env:"):
+            name = key_source.split(":", 1)[1]
+            hint = (" If that is not the key you meant, run 'unset {0}' -- an "
+                    "environment variable takes precedence over the "
+                    "keyring.".format(name))
         return LLMError(
-            "{0} rejected the API key ({1}). Check 'epsilon ai status', or set "
-            "the key again with 'epsilon ai login'.".format(provider, response.status_code))
+            "{0} rejected the API key ({1}).{2}{3} Run 'epsilon ai status' to "
+            "see what is configured.".format(
+                provider, response.status_code, where, hint))
     if response.status_code == 429:
         return LLMError("{0} rate-limited the request. Retry shortly.".format(provider))
     return LLMError("{0} returned {1}: {2}".format(provider, response.status_code, detail))
@@ -40,13 +51,14 @@ class AnthropicProvider(Provider):
     name = "anthropic"
 
     def __init__(self, api_key: str, model: str, base_url: Optional[str] = None,
-                 timeout: int = DEFAULT_TIMEOUT):
+                 timeout: int = DEFAULT_TIMEOUT, key_source: Optional[str] = None):
         if not api_key:
             raise LLMError("the Anthropic provider needs an API key")
         self.api_key = api_key
         self.model = model
         self.url = (base_url.rstrip("/") + "/v1/messages") if base_url else ANTHROPIC_URL
         self.timeout = timeout
+        self.key_source = key_source
 
     def complete(self, system, messages, tools=None, force_tool=None,
                  max_tokens=2048, temperature=0.0):
@@ -76,7 +88,7 @@ class AnthropicProvider(Provider):
             raise LLMError("could not reach the Anthropic API: {0}".format(exc))
 
         if response.status_code != 200:
-            raise _http_error("Anthropic", response)
+            raise _http_error("Anthropic", response, self.key_source)
 
         body = response.json()
         text_parts, tool_name, tool_input = [], None, None
@@ -136,7 +148,7 @@ class AnthropicProvider(Provider):
         except requests.RequestException as exc:
             raise LLMError("could not reach the Anthropic API: {0}".format(exc))
         if response.status_code != 200:
-            raise _http_error("Anthropic", response)
+            raise _http_error("Anthropic", response, self.key_source)
 
         body = response.json()
         text, calls = [], []
@@ -158,7 +170,7 @@ class OpenAICompatibleProvider(Provider):
     name = "openai-compatible"
 
     def __init__(self, api_key: Optional[str], model: str, base_url: str,
-                 timeout: int = DEFAULT_TIMEOUT):
+                 timeout: int = DEFAULT_TIMEOUT, key_source: Optional[str] = None):
         if not base_url:
             raise LLMError(
                 "this provider needs a base_url "
@@ -167,6 +179,7 @@ class OpenAICompatibleProvider(Provider):
         self.model = model
         self.url = base_url.rstrip("/") + "/chat/completions"
         self.timeout = timeout
+        self.key_source = key_source
         # OpenAI's newer reasoning models renamed max_tokens and refuse a
         # temperature other than the default. Rather than maintain a list of
         # model names that will be out of date within months, adapt to what the
@@ -195,7 +208,7 @@ class OpenAICompatibleProvider(Provider):
 
             if response.status_code == 400 and self._adapt(response):
                 continue
-            raise _http_error("The endpoint", response)
+            raise _http_error("The endpoint", response, self.key_source)
         raise LLMError("the endpoint kept rejecting the request parameters")
 
     def _adapt(self, response) -> bool:
@@ -333,8 +346,10 @@ def build(config) -> Provider:
                                 PROVIDER_OPENAI_COMPATIBLE)
 
     if config.provider == PROVIDER_ANTHROPIC:
-        return AnthropicProvider(config.api_key, config.model, config.base_url)
+        return AnthropicProvider(config.api_key, config.model, config.base_url,
+                                 key_source=config.key_source)
     if config.provider in (PROVIDER_OPENAI, PROVIDER_OPENAI_COMPATIBLE):
         return OpenAICompatibleProvider(config.api_key, config.model,
-                                        config.endpoint)
+                                        config.endpoint,
+                                        key_source=config.key_source)
     raise LLMError("unknown provider '{0}'".format(config.provider))
