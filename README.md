@@ -182,11 +182,28 @@ epsilon ai status     # which model, and where its key came from
 epsilon ai logout
 ```
 
+For OpenAI:
+
+```bash
+epsilon ai login --provider openai --model gpt-4o --tier A
+```
+
 Key resolution: `EPSILON_LLM_API_KEY` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`,
-then the OS keyring, then the config file. Two providers are supported —
-`anthropic`, and `openai-compatible` for anything speaking
-`/v1/chat/completions` (vLLM, Ollama, llama.cpp, TGI, Together, Groq,
-OpenRouter). Set `base_url` for a self-hosted endpoint.
+then the OS keyring, then the config file.
+
+Three provider names, two backends:
+
+| `--provider` | Endpoint | Notes |
+|---|---|---|
+| `anthropic` | Anthropic Messages API | default `claude-sonnet-5` |
+| `openai` | `https://api.openai.com/v1` | default `gpt-4o`; no `base_url` needed |
+| `openai-compatible` | your `base_url` | vLLM, Ollama, llama.cpp, TGI, Together, Groq, OpenRouter |
+
+`openai` and `openai-compatible` are the same backend — OpenAI's API is the
+format the others imitate. Newer OpenAI models renamed `max_tokens` and refuse
+a custom `temperature`; rather than track a model list that goes stale, the
+client adapts to whatever the endpoint rejects and remembers it for the
+session.
 
 **Never put a key in your project directory.** `epsilon build` packages the
 project and ships it to the coordinator; a key in `project.yml` or a `.env` is

@@ -26,11 +26,20 @@ KEYRING_SERVICE = "epsilon-sdk"
 KEYRING_ACCOUNT = "ai"
 
 PROVIDER_ANTHROPIC = "anthropic"
+PROVIDER_OPENAI = "openai"
 PROVIDER_OPENAI_COMPATIBLE = "openai-compatible"
-PROVIDERS = (PROVIDER_ANTHROPIC, PROVIDER_OPENAI_COMPATIBLE)
+PROVIDERS = (PROVIDER_ANTHROPIC, PROVIDER_OPENAI, PROVIDER_OPENAI_COMPATIBLE)
+
+# "openai" is the same backend as "openai-compatible" -- OpenAI's own API is
+# the format every self-hosted server imitates. It exists as a separate name
+# only so the endpoint does not have to be typed from memory.
+DEFAULT_BASE_URLS = {
+    PROVIDER_OPENAI: "https://api.openai.com/v1",
+}
 
 DEFAULT_MODELS = {
     PROVIDER_ANTHROPIC: "claude-sonnet-5",
+    PROVIDER_OPENAI: "gpt-4o",
     PROVIDER_OPENAI_COMPATIBLE: "",
 }
 
@@ -61,9 +70,17 @@ class AIConfig:
     key_source: Optional[str] = None
 
     @property
+    def endpoint(self) -> Optional[str]:
+        """The base URL to call, falling back to the provider's default."""
+        return self.base_url or DEFAULT_BASE_URLS.get(self.provider)
+
+    @property
     def configured(self) -> bool:
-        return bool(self.api_key) or self.provider == PROVIDER_OPENAI_COMPATIBLE \
-            and bool(self.base_url)
+        if self.api_key:
+            return True
+        # A self-hosted endpoint often wants no credential at all.
+        return (self.provider == PROVIDER_OPENAI_COMPATIBLE
+                and bool(self.base_url))
 
 
 def config_dir() -> str:

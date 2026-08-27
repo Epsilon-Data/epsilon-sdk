@@ -152,7 +152,8 @@ class AnthropicProvider(Provider):
 
 
 class OpenAICompatibleProvider(Provider):
-    """vLLM, Ollama, llama.cpp, TGI, Together, Groq, OpenRouter, and friends."""
+    """OpenAI itself, plus vLLM, Ollama, llama.cpp, TGI, Together, Groq,
+    OpenRouter and anything else serving /v1/chat/completions."""
 
     name = "openai-compatible"
 
@@ -160,12 +161,57 @@ class OpenAICompatibleProvider(Provider):
                  timeout: int = DEFAULT_TIMEOUT):
         if not base_url:
             raise LLMError(
-                "the openai-compatible provider needs a base_url "
+                "this provider needs a base_url "
                 "(e.g. http://localhost:11434/v1 for Ollama)")
         self.api_key = api_key or "not-needed"
         self.model = model
         self.url = base_url.rstrip("/") + "/chat/completions"
         self.timeout = timeout
+        # OpenAI's newer reasoning models renamed max_tokens and refuse a
+        # temperature other than the default. Rather than maintain a list of
+        # model names that will be out of date within months, adapt to what the
+        # endpoint actually rejects and remember it for the session.
+        self._token_param = "max_tokens"
+        self._send_temperature = True
+
+    def _post(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        for _ in range(3):
+            body = dict(payload)
+            body[self._token_param] = body.pop("__max_tokens")
+            if self._send_temperature:
+                body["temperature"] = payload.get("__temperature", 0.0)
+            body.pop("__temperature", None)
+
+            try:
+                response = requests.post(
+                    self.url, json=body, timeout=self.timeout,
+                    headers={"Authorization": "Bearer " + self.api_key,
+                             "Content-Type": "application/json"})
+            except requests.RequestException as exc:
+                raise LLMError("could not reach {0}: {1}".format(self.url, exc))
+
+            if response.status_code == 200:
+                return response.json()
+
+            if response.status_code == 400 and self._adapt(response):
+                continue
+            raise _http_error("The endpoint", response)
+        raise LLMError("the endpoint kept rejecting the request parameters")
+
+    def _adapt(self, response) -> bool:
+        """Learn from a 400 about parameters this model will not accept."""
+        try:
+            message = (response.json().get("error") or {}).get("message") or ""
+        except ValueError:
+            return False
+        lowered = message.lower()
+        if "max_completion_tokens" in lowered and self._token_param == "max_tokens":
+            self._token_param = "max_completion_tokens"
+            return True
+        if "temperature" in lowered and self._send_temperature:
+            self._send_temperature = False
+            return True
+        return False
 
     def complete(self, system, messages, tools=None, force_tool=None,
                  max_tokens=2048, temperature=0.0):
@@ -177,8 +223,8 @@ class OpenAICompatibleProvider(Provider):
         payload: Dict[str, Any] = {
             "model": self.model,
             "messages": chat,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
+            "__max_tokens": max_tokens,
+            "__temperature": temperature,
         }
         if tools:
             payload["tools"] = [
@@ -191,18 +237,7 @@ class OpenAICompatibleProvider(Provider):
                 payload["tool_choice"] = {"type": "function",
                                           "function": {"name": force_tool}}
 
-        try:
-            response = requests.post(
-                self.url, json=payload, timeout=self.timeout,
-                headers={"Authorization": "Bearer " + self.api_key,
-                         "Content-Type": "application/json"})
-        except requests.RequestException as exc:
-            raise LLMError("could not reach {0}: {1}".format(self.url, exc))
-
-        if response.status_code != 200:
-            raise _http_error("The endpoint", response)
-
-        body = response.json()
+        body = self._post(payload)
         choices = body.get("choices") or []
         if not choices:
             raise LLMError("the endpoint returned no choices")
@@ -258,8 +293,8 @@ class OpenAICompatibleProvider(Provider):
         payload = {
             "model": self.model,
             "messages": self._serialise(system, history),
-            "max_tokens": max_tokens,
-            "temperature": temperature,
+            "__max_tokens": max_tokens,
+            "__temperature": temperature,
         }
         if tools:
             payload["tools"] = [
@@ -267,17 +302,7 @@ class OpenAICompatibleProvider(Provider):
                  "function": {"name": t.name, "description": t.description,
                               "parameters": t.schema}} for t in tools]
 
-        try:
-            response = requests.post(
-                self.url, json=payload, timeout=self.timeout,
-                headers={"Authorization": "Bearer " + self.api_key,
-                         "Content-Type": "application/json"})
-        except requests.RequestException as exc:
-            raise LLMError("could not reach {0}: {1}".format(self.url, exc))
-        if response.status_code != 200:
-            raise _http_error("The endpoint", response)
-
-        body = response.json()
+        body = self._post(payload)
         choices = body.get("choices") or []
         if not choices:
             raise LLMError("the endpoint returned no choices")
@@ -304,10 +329,12 @@ class OpenAICompatibleProvider(Provider):
 
 def build(config) -> Provider:
     """Construct the provider described by an AIConfig."""
-    from sdk.llm.config import PROVIDER_ANTHROPIC, PROVIDER_OPENAI_COMPATIBLE
+    from sdk.llm.config import (PROVIDER_ANTHROPIC, PROVIDER_OPENAI,
+                                PROVIDER_OPENAI_COMPATIBLE)
 
     if config.provider == PROVIDER_ANTHROPIC:
         return AnthropicProvider(config.api_key, config.model, config.base_url)
-    if config.provider == PROVIDER_OPENAI_COMPATIBLE:
-        return OpenAICompatibleProvider(config.api_key, config.model, config.base_url)
+    if config.provider in (PROVIDER_OPENAI, PROVIDER_OPENAI_COMPATIBLE):
+        return OpenAICompatibleProvider(config.api_key, config.model,
+                                        config.endpoint)
     raise LLMError("unknown provider '{0}'".format(config.provider))

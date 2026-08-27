@@ -236,3 +236,126 @@ class TestStructured:
         with pytest.raises(LLMError) as exc:
             structured(provider, "sys", "prompt", self.SCHEMA)
         assert "more capable model" in str(exc.value)
+
+
+class FakeResponse:
+    def __init__(self, status_code, payload):
+        self.status_code = status_code
+        self._payload = payload
+        self.text = json.dumps(payload)
+
+    def json(self):
+        return self._payload
+
+
+class TestOpenAIProvider:
+    """OpenAI's own API is the openai-compatible backend. Its newer models
+    renamed max_tokens and refuse a custom temperature, and the model list
+    changes faster than any hardcoded table would survive."""
+
+    def _ok(self):
+        return FakeResponse(200, {"choices": [
+            {"message": {"content": "hi"}, "finish_reason": "stop"}]})
+
+    def _rejects(self, text):
+        return FakeResponse(400, {"error": {"message": text}})
+
+    def test_the_openai_provider_defaults_to_the_public_endpoint(self):
+        cfg = ai_config.AIConfig(provider="openai", model="gpt-4o", api_key="k")
+        provider = build(cfg)
+        assert provider.url == "https://api.openai.com/v1/chat/completions"
+
+    def test_an_explicit_base_url_still_wins(self):
+        cfg = ai_config.AIConfig(provider="openai", model="gpt-4o", api_key="k",
+                                 base_url="https://gateway.internal/v1")
+        assert build(cfg).url.startswith("https://gateway.internal/v1")
+
+    def test_max_tokens_is_renamed_when_the_model_rejects_it(self, monkeypatch):
+        sent = []
+
+        def fake_post(url, json=None, **kwargs):
+            sent.append(json)
+            if "max_tokens" in json:
+                return self._rejects(
+                    "Unsupported parameter: 'max_tokens' is not supported with "
+                    "this model. Use 'max_completion_tokens' instead.")
+            return self._ok()
+
+        monkeypatch.setattr("sdk.llm.providers.requests.post", fake_post)
+        provider = OpenAICompatibleProvider("k", "o3", "https://api.openai.com/v1")
+        provider.complete("sys", [Message("user", "hi")])
+        assert "max_completion_tokens" in sent[-1]
+        assert "max_tokens" not in sent[-1]
+
+    def test_the_rename_is_remembered_for_later_calls(self, monkeypatch):
+        sent = []
+
+        def fake_post(url, json=None, **kwargs):
+            sent.append(json)
+            if "max_tokens" in json:
+                return self._rejects("Use 'max_completion_tokens' instead.")
+            return self._ok()
+
+        monkeypatch.setattr("sdk.llm.providers.requests.post", fake_post)
+        provider = OpenAICompatibleProvider("k", "o3", "https://api.openai.com/v1")
+        provider.complete("sys", [Message("user", "hi")])
+        provider.complete("sys", [Message("user", "again")])
+        # first call retried; the second must not repeat the mistake
+        assert len(sent) == 3
+        assert "max_completion_tokens" in sent[-1]
+
+    def test_temperature_is_dropped_when_the_model_refuses_it(self, monkeypatch):
+        sent = []
+
+        def fake_post(url, json=None, **kwargs):
+            sent.append(json)
+            if "temperature" in json:
+                return self._rejects(
+                    "Unsupported value: 'temperature' does not support 0.0 "
+                    "with this model. Only the default (1) is supported.")
+            return self._ok()
+
+        monkeypatch.setattr("sdk.llm.providers.requests.post", fake_post)
+        provider = OpenAICompatibleProvider("k", "o3", "https://api.openai.com/v1")
+        provider.complete("sys", [Message("user", "hi")])
+        assert "temperature" not in sent[-1]
+
+    def test_the_agent_loop_adapts_the_same_way(self, monkeypatch):
+        from sdk.llm.base import Turn
+        sent = []
+
+        def fake_post(url, json=None, **kwargs):
+            sent.append(json)
+            if "max_tokens" in json:
+                return self._rejects("Use 'max_completion_tokens' instead.")
+            return self._ok()
+
+        monkeypatch.setattr("sdk.llm.providers.requests.post", fake_post)
+        provider = OpenAICompatibleProvider("k", "o3", "https://api.openai.com/v1")
+        provider.converse("sys", [Turn("user", text="hi")])
+        assert "max_completion_tokens" in sent[-1]
+
+    def test_an_unrelated_400_is_raised_not_retried(self, monkeypatch):
+        calls = []
+
+        def fake_post(url, json=None, **kwargs):
+            calls.append(json)
+            return self._rejects("You exceeded your current quota.")
+
+        monkeypatch.setattr("sdk.llm.providers.requests.post", fake_post)
+        provider = OpenAICompatibleProvider("k", "gpt-4o", "https://api.openai.com/v1")
+        with pytest.raises(LLMError) as exc:
+            provider.complete("sys", [Message("user", "hi")])
+        assert "quota" in str(exc.value)
+        assert len(calls) == 1
+
+    def test_a_bad_key_says_so_plainly(self, monkeypatch):
+        monkeypatch.setattr("sdk.llm.providers.requests.post",
+                            lambda *a, **k: FakeResponse(401, {"error": {
+                                "message": "Incorrect API key provided"}}))
+        provider = OpenAICompatibleProvider("bad", "gpt-4o",
+                                            "https://api.openai.com/v1")
+        with pytest.raises(LLMError) as exc:
+            provider.complete("sys", [Message("user", "hi")])
+        assert "rejected the API key" in str(exc.value)
+        assert "epsilon ai login" in str(exc.value)
