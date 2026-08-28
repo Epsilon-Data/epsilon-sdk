@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Callable, Dict, List, Optional
 
-from sdk.card import Card
+from sdk.profile import Profile
 from sdk.llm.base import (AgentReply, LLMError, Provider, ToolCall, ToolResult,
                           ToolSpec, Turn)
 from sdk.tools import Tool, ToolError, Toolbox, build_tools
@@ -36,7 +36,7 @@ in a trusted research environment (TRE) go from a research question to an \
 analysis whose output will actually clear disclosure review.
 
 You are working inside the researcher's project directory. Use your tools \
-rather than your memory: call read_card before discussing the data, read_file \
+rather than your memory: call read_dataset before discussing the data, read_file \
 before discussing code, and run_analysis before reporting what code produces.
 
 THE DATASET CARD IS THE TRUTH ABOUT THE DATA. It states what one row is, what \
@@ -51,7 +51,7 @@ they can compute something the matcher refused, and never work around a \
 refusal by writing the code by hand.
 
 DISCLOSURE RULES ARE STRUCTURAL. Any code you write must aggregate before it \
-returns, apply the card's suppression threshold to every cell, and never print \
+returns, apply the profile's suppression threshold to every cell, and never print \
 or save an individual record. Prefer generate_analysis, whose templates already \
 do this, and write code by hand only when no template fits.
 
@@ -60,7 +60,7 @@ whenever you report one.
 
 NEVER REPORT A NUMBER YOU HAVE NOT SEEN. Report only figures that appear in a \
 tool result from this turn. If a result is marked INCOMPLETE, say so and \
-narrow the request; do not fill the missing part from the card, from an \
+narrow the request; do not fill the missing part from the profile, from an \
 earlier message, or from what you expect the value to be. A fabricated figure \
 presented as output is the worst thing you can do here.
 
@@ -82,20 +82,20 @@ class Step:
 @dataclass
 class Session:
     provider: Provider
-    card: Card
+    profile: Profile
     project_dir: str = "."
     history: List[Turn] = field(default_factory=list)
     tools: List[Tool] = field(default_factory=list)
     transcript_path: Optional[str] = None
 
     @classmethod
-    def create(cls, provider: Provider, card: Card,
+    def create(cls, provider: Provider, profile: Profile,
                project_dir: str = ".", record: bool = True) -> "Session":
-        box = Toolbox(project_dir, card)
-        session = cls(provider=provider, card=card, project_dir=project_dir,
+        box = Toolbox(project_dir, profile)
+        session = cls(provider=provider, profile=profile, project_dir=project_dir,
                       tools=build_tools(box))
         if record:
-            session.transcript_path = _open_transcript(project_dir, card)
+            session.transcript_path = _open_transcript(project_dir, profile)
         return session
 
     @property
@@ -184,7 +184,7 @@ class Session:
         return final
 
 
-def _open_transcript(project_dir: str, card: Card) -> Optional[str]:
+def _open_transcript(project_dir: str, profile: Profile) -> Optional[str]:
     """Start a transcript so the AI assistance is part of the job's record.
 
     With a bring-your-own-key setup the platform never sees these calls, so the
@@ -199,9 +199,9 @@ def _open_transcript(project_dir: str, card: Card) -> Optional[str]:
             directory, datetime.now().strftime("%Y-%m-%d") + ".jsonl")
         _record(path, {"role": "session",
                        "started": datetime.now().isoformat(),
-                       "archetype": card.archetype_id,
-                       "schema_hash": card.schema_hash,
-                       "card_derived": card.derived})
+                       "archetype": profile.archetype_id,
+                       "schema_hash": profile.schema_hash,
+                       "rows": profile.grain.rows})
         return path
     except OSError:
         return None

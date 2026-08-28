@@ -33,139 +33,136 @@ class ScriptedProvider:
 
 
 @pytest.fixture
-def project(tmp_path, card_json):
-    generated = tmp_path / "generated"
-    generated.mkdir()
-    (generated / "card.json").write_text(json.dumps(card_json), encoding="utf-8")
-    return tmp_path
+def project(dataset_dir):
+    return dataset_dir
 
 
-def session(provider, card, project, **kwargs):
-    return Session.create(provider, card, project_dir=str(project), **kwargs)
+def session(provider, profile, project, **kwargs):
+    return Session.create(provider, profile, project_dir=str(project), **kwargs)
 
 
 class TestLoop:
-    def test_a_plain_answer_ends_the_turn(self, card, project):
+    def test_a_plain_answer_ends_the_turn(self, profile, project):
         provider = ScriptedProvider([AgentReply(text="Hello.")])
-        s = session(provider, card, project)
+        s = session(provider, profile, project)
         assert s.ask("hi") == "Hello."
         assert len(provider.seen) == 1
 
-    def test_a_tool_call_is_executed_and_fed_back(self, card, project):
+    def test_a_tool_call_is_executed_and_fed_back(self, profile, project):
         provider = ScriptedProvider([
-            AgentReply(tool_calls=[ToolCall("1", "read_card", {})]),
+            AgentReply(tool_calls=[ToolCall("1", "read_dataset", {})]),
             AgentReply(text="It is a diagnosis-level dataset."),
         ])
-        s = session(provider, card, project)
+        s = session(provider, profile, project)
         reply = s.ask("what is this?")
         assert reply == "It is a diagnosis-level dataset."
         # the second call carries the tool result
         results = provider.seen[1]["history"][-1].tool_results
-        assert results[0].name == "read_card"
+        assert results[0].name == "read_dataset"
         assert "GRAIN" in results[0].content
 
-    def test_several_tools_in_one_turn(self, card, project):
+    def test_several_tools_in_one_turn(self, profile, project):
         provider = ScriptedProvider([
-            AgentReply(tool_calls=[ToolCall("1", "read_card", {}),
+            AgentReply(tool_calls=[ToolCall("1", "read_dataset", {}),
                                    ToolCall("2", "list_analyses", {})]),
             AgentReply(text="ok"),
         ])
-        s = session(provider, card, project)
+        s = session(provider, profile, project)
         s.ask("go")
         assert len(provider.seen[1]["history"][-1].tool_results) == 2
 
-    def test_every_tool_is_offered(self, card, project):
+    def test_every_tool_is_offered(self, profile, project):
         provider = ScriptedProvider([AgentReply(text="ok")])
-        s = session(provider, card, project)
+        s = session(provider, profile, project)
         s.ask("hi")
         offered = provider.seen[0]["tools"]
-        for name in ("read_card", "list_analyses", "check_analysis",
+        for name in ("read_dataset", "list_analyses", "check_analysis",
                      "generate_analysis", "run_analysis", "run_checks",
                      "profile_field", "read_file", "write_file", "list_files"):
             assert name in offered
 
-    def test_steps_are_reported_for_display(self, card, project):
+    def test_steps_are_reported_for_display(self, profile, project):
         provider = ScriptedProvider([
-            AgentReply(tool_calls=[ToolCall("1", "read_card", {})]),
+            AgentReply(tool_calls=[ToolCall("1", "read_dataset", {})]),
             AgentReply(text="ok"),
         ])
         steps = []
-        session(provider, card, project).ask("go", on_step=steps.append)
+        session(provider, profile, project).ask("go", on_step=steps.append)
         assert [s.kind for s in steps] == ["tool"]
-        assert steps[0].label == "read_card"
+        assert steps[0].label == "read_dataset"
 
-    def test_the_loop_is_bounded(self, card, project):
+    def test_the_loop_is_bounded(self, profile, project):
         provider = ScriptedProvider(
-            [AgentReply(tool_calls=[ToolCall(str(i), "read_card", {})])
+            [AgentReply(tool_calls=[ToolCall(str(i), "read_dataset", {})])
              for i in range(MAX_STEPS + 5)])
-        reply = session(provider, card, project).ask("loop forever")
+        reply = session(provider, profile, project).ask("loop forever")
         assert "Stopped after" in reply
 
 
 class TestResilience:
-    def test_an_unknown_tool_is_reported_not_raised(self, card, project):
+    def test_an_unknown_tool_is_reported_not_raised(self, profile, project):
         provider = ScriptedProvider([
             AgentReply(tool_calls=[ToolCall("1", "rm_rf", {})]),
             AgentReply(text="recovered"),
         ])
-        s = session(provider, card, project)
+        s = session(provider, profile, project)
         assert s.ask("go") == "recovered"
         result = provider.seen[1]["history"][-1].tool_results[0]
         assert result.is_error
         assert "No such tool" in result.content
 
-    def test_bad_arguments_come_back_as_guidance(self, card, project):
+    def test_bad_arguments_come_back_as_guidance(self, profile, project):
         provider = ScriptedProvider([
             AgentReply(tool_calls=[ToolCall("1", "read_file", {"wrong": 1})]),
             AgentReply(text="recovered"),
         ])
-        s = session(provider, card, project)
+        s = session(provider, profile, project)
         s.ask("go")
         result = provider.seen[1]["history"][-1].tool_results[0]
         assert result.is_error
         assert "Bad arguments" in result.content
 
-    def test_a_refusal_is_information_not_a_crash(self, card, project):
+    def test_a_refusal_is_information_not_a_crash(self, profile, project):
         provider = ScriptedProvider([
             AgentReply(tool_calls=[
                 ToolCall("1", "generate_analysis", {"analysis": "prevalence"})]),
             AgentReply(text="I explained why not."),
         ])
-        s = session(provider, card, project)
+        s = session(provider, profile, project)
         assert s.ask("compute prevalence") == "I explained why not."
         result = provider.seen[1]["history"][-1].tool_results[0]
         assert result.content.startswith("REFUSED:")
 
-    def test_a_provider_failure_is_surfaced(self, card, project):
+    def test_a_provider_failure_is_surfaced(self, profile, project):
         class Broken:
             def converse(self, *a, **k):
                 raise LLMError("endpoint unreachable")
-        reply = session(Broken(), card, project).ask("hi")
+        reply = session(Broken(), profile, project).ask("hi")
         assert "endpoint unreachable" in reply
 
 
 class TestAuthority:
-    def test_the_model_cannot_generate_a_blocked_analysis(self, card, project):
+    def test_the_model_cannot_generate_a_blocked_analysis(self, profile, project):
         provider = ScriptedProvider([
             AgentReply(tool_calls=[
                 ToolCall("1", "generate_analysis", {"analysis": "prevalence"})]),
             AgentReply(text="done"),
         ])
-        session(provider, card, project).ask("just do it")
+        session(provider, profile, project).ask("just do it")
         assert not os.path.exists(os.path.join(str(project), "analyses",
                                                "prevalence.py"))
 
-    def test_the_model_cannot_write_outside_the_project(self, card, project):
+    def test_the_model_cannot_write_outside_the_project(self, profile, project):
         provider = ScriptedProvider([
             AgentReply(tool_calls=[ToolCall("1", "write_file", {
                 "path": "../escaped.py", "content": "x = 1"})]),
             AgentReply(text="done"),
         ])
-        session(provider, card, project).ask("write it")
+        session(provider, profile, project).ask("write it")
         assert not os.path.exists(os.path.join(os.path.dirname(str(project)),
                                                "escaped.py"))
 
-    def test_the_system_prompt_states_who_decides(self, card, project):
+    def test_the_system_prompt_states_who_decides(self, profile, project):
         assert "NOT YOURS TO MAKE" in SYSTEM
         assert "authoritative" in SYSTEM
 
@@ -178,12 +175,12 @@ class TestAuthority:
 
 
 class TestTranscript:
-    def test_a_transcript_is_written(self, card, project):
+    def test_a_transcript_is_written(self, profile, project):
         provider = ScriptedProvider([
-            AgentReply(tool_calls=[ToolCall("1", "read_card", {})]),
+            AgentReply(tool_calls=[ToolCall("1", "read_dataset", {})]),
             AgentReply(text="answered"),
         ])
-        s = session(provider, card, project)
+        s = session(provider, profile, project)
         s.ask("what is this?")
         assert s.transcript_path and os.path.exists(s.transcript_path)
         entries = [json.loads(l) for l in open(s.transcript_path, encoding="utf-8")]
@@ -191,15 +188,15 @@ class TestTranscript:
         assert roles[0] == "session"
         assert "user" in roles and "tool" in roles and "assistant" in roles
 
-    def test_recording_can_be_declined(self, card, project):
+    def test_recording_can_be_declined(self, profile, project):
         provider = ScriptedProvider([AgentReply(text="ok")])
-        s = session(provider, card, project, record=False)
+        s = session(provider, profile, project, record=False)
         s.ask("hi")
         assert s.transcript_path is None
         assert not os.path.exists(os.path.join(str(project), ".epsilon"))
 
-    def test_the_session_header_pins_the_card(self, card, project):
-        s = session(ScriptedProvider([AgentReply(text="ok")]), card, project)
+    def test_the_session_header_pins_the_card(self, profile, project):
+        s = session(ScriptedProvider([AgentReply(text="ok")]), profile, project)
         first = json.loads(open(s.transcript_path, encoding="utf-8").readline())
-        assert first["archetype"] == card.archetype_id
-        assert first["schema_hash"] == card.schema_hash
+        assert first["archetype"] == profile.archetype_id
+        assert first["schema_hash"] == profile.schema_hash

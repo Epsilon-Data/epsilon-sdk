@@ -79,94 +79,79 @@ def mock_archetype():
 
 # -- copilot fixtures -------------------------------------------------------
 
-# Modelled on the live MIMIC-IV demo archetype: six leaves at diagnosis grain,
-# no patient key, and two ICD revisions in one column. The awkward parts are
-# the point -- they are what the catalogue has to refuse.
-CARD_JSON = {
-    "cardVersion": 1,
+# A projection shaped like the live MIMIC-IV demo: diagnosis grain, no entity
+# key, an aggregate-only timestamp, a top-coded age and two ICD revisions in
+# one column. The awkward parts are the point -- they are what the profiler
+# has to notice and the catalogue has to refuse.
+HEADER = ("admissions.time,admissions.type,patient.gender,patient.age,"
+          "diagnoses.icd_code,diagnoses.icd_version")
+
+TYPES = ["EW EMER.", "OBSERVATION ADMIT", "URGENT", "EU OBSERVATION",
+         "SURGICAL SAME DAY ADMISSION", "DIRECT EMER.", "ELECTIVE",
+         "DIRECT OBSERVATION", "AMBULATORY OBSERVATION"]
+
+
+def _code(i):
+    """Many distinct codes, so the column profiles as a code rather than a
+    category -- and split across two ICD revisions, as MIMIC-IV is."""
+    return "4019" if i % 3 else "I{0:03d}".format(10 + (i % 40))
+
+
+def _rows(n=4000):
+    out = [HEADER]
+    for i in range(n):
+        # age 30..89 normally, with a deliberate pile-up at 91 (top-coded)
+        age = 91 if i % 11 == 0 else 30 + (i % 60)
+        out.append("21{0:02d}-03-04 11:00,{1},{2},{3},{4},{5}".format(
+            i % 40, TYPES[i % len(TYPES)], "M" if i % 2 else "F", age,
+            _code(i), 9 if i % 3 else 10))
+    return "\n".join(out) + "\n"
+
+
+ARCHETYPE = {
+    "$id": "ds-1/arch-1",
     "title": "Test cohort",
-    "datasetId": "ds-1",
-    "archetype": "arch-1",
-    "schemaHash": "4f2a91c0b3de00112233",
-    "datasetVersion": 3,
-    "grain": {
-        "unit": "diagnosis_record",
-        "statement": "One row per diagnosis code.",
-        "rows": 100000,
-        "entityCounts": {"admissions": 275, "patients": 100},
-        "dedupeKey": None,
-        "known": True,
+    "type": "object",
+    "syntheticData": {"available": True, "schemaHash": "4f2a91c0b3de00112233",
+                      "version": 3},
+    "properties": {
+        "patient": {"type": "object", "properties": {
+            "gender": {"type": "string"}, "age": {"type": "integer"}}},
+        "admissions": {"type": "object", "properties": {
+            "type": {"type": "object"}, "time": {"type": "object"}}},
+        "diagnoses": {"type": "object", "properties": {
+            "icd_code": {"type": "object"}, "icd_version": {"type": "integer"}}},
     },
-    "leaves": {
-        "patient.gender": {
-            "source": "hosp.patients.gender", "type": "categorical",
-            "accessLevel": "DETAILED", "categories": ["M", "F"],
-            "cardinality": 2, "nullRate": 0.0,
-            "caveats": ["Denormalised onto every diagnosis row. At row level "
-                        "the split is 51.6% M / 48.4% F; across patients it is "
-                        "57% / 43%."],
-        },
-        "patient.age": {
-            "source": "hosp.patients.anchor_age", "type": "integer",
-            "accessLevel": "DETAILED", "unit": "years", "range": [21, 91],
-            "nullRate": 0.0,
-            "caveats": ["Ages above 89 are recorded as 91."],
-        },
-        "admissions.type": {
-            "source": "hosp.admissions.admission_type", "type": "categorical",
-            "accessLevel": "DETAILED", "cardinality": 9, "nullRate": 0.0,
-        },
-        "admissions.time": {
-            "source": "hosp.admissions.admittime", "type": "timestamp",
-            "accessLevel": "HIGH_LEVEL", "nullRate": 0.0,
-            "releasableAs": ["month", "quarter", "year"],
-            "comparableAcrossEntities": False,
-        },
-        "diagnoses.icd_code": {
-            "source": "hosp.diagnoses_icd.icd_code", "type": "code",
-            "accessLevel": "DETAILED", "cardinality": 1472, "nullRate": 0.0,
-            "codeSystem": {
-                "discriminator": "diagnoses.icd_version",
-                "systems": {"9": "ICD-9-CM", "10": "ICD-10-CM"},
-                "mixed": True, "split": {"9": 0.487, "10": 0.513},
-            },
-        },
-        "diagnoses.icd_version": {
-            "source": "hosp.diagnoses_icd.icd_version", "type": "categorical",
-            "accessLevel": "DETAILED", "categories": ["9", "10"],
-            "cardinality": 2, "nullRate": 0.0,
-        },
-    },
-    "excluded": ["No discharge date, so no length of stay."],
-    "policy": {"minCell": 10, "allowAiProfiling": True},
 }
 
 
 @pytest.fixture
-def card_json():
-    """Raw card dict, safe to mutate in a test."""
-    import copy
-    return copy.deepcopy(CARD_JSON)
+def dataset_dir(tmp_path):
+    """An initialised project with a real CSV to measure."""
+    import json
+    generated = tmp_path / "generated"
+    generated.mkdir()
+    (generated / "data.csv").write_text(_rows(), encoding="utf-8")
+    (generated / "archetype.json").write_text(json.dumps(ARCHETYPE),
+                                              encoding="utf-8")
+    return tmp_path
 
 
 @pytest.fixture
-def card(card_json):
-    from sdk.card import Card
-    return Card.from_json(card_json)
+def profile(dataset_dir):
+    from sdk.profile import profile_project
+    return profile_project(str(dataset_dir))
 
 
 @pytest.fixture
-def unblocked_card(card_json):
-    """The same dataset once the owner grants a key, a duration and real dates."""
+def keyed_profile(profile):
+    """The same dataset once an archetype grants a pseudonymised entity key."""
     import copy
-    from sdk.card import Card
-    raw = copy.deepcopy(card_json)
-    raw["grain"].update({"dedupeKey": "patient.pid",
-                         "entityCounts": {"patients": 100}, "rows": 100})
-    raw["leaves"]["patient.pid"] = {
-        "type": "string", "accessLevel": "DETAILED", "nullRate": 0.0}
-    raw["leaves"]["stay.los"] = {
-        "type": "duration", "unit": "days", "accessLevel": "DETAILED",
-        "nullRate": 0.0}
-    raw["leaves"]["admissions.time"]["comparableAcrossEntities"] = True
-    return Card.from_json(raw)
+    from sdk.profile import DETAILED, Leaf
+    p = copy.deepcopy(profile)
+    p.leaves["patient.pid"] = Leaf(path="patient.pid", type="code",
+                                   access_level=DETAILED, cardinality=400,
+                                   null_rate=0.0)
+    p.grain.dedupe_key = "patient.pid"
+    p.grain.unit = "patient"
+    return p

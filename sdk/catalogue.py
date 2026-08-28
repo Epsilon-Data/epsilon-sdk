@@ -1,7 +1,7 @@
 """
 The analysis catalogue: what can be asked of a dataset, decided in code.
 
-Each entry declares requirements that are checked against a Dataset Card by
+Each entry declares requirements that are checked against a Dataset Profile by
 ordinary Python. A model may rank these results or phrase them, but it never
 decides them -- so the verdicts are reproducible, testable, and identical
 whichever model (or none) is configured.
@@ -15,7 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional
 
-from sdk.card import Card, Leaf
+from sdk.profile import Profile, Leaf
 
 FEASIBLE = "FEASIBLE"
 BLOCKED = "BLOCKED"
@@ -52,12 +52,12 @@ class AnalysisSpec:
     key: str
     title: str
     question: str
-    evaluate: Callable[[Card], Match]
+    evaluate: Callable[[Profile], Match]
 
 
 # -- shared helpers --------------------------------------------------------
 
-def _leaf_warnings(card: Card, paths: List[str]) -> List[str]:
+def _leaf_warnings(profile: Profile, paths: List[str]) -> List[str]:
     """Surface the caveats of every leaf an analysis would touch.
 
     This is how dataset-specific traps -- a de-identification age cap, shifted
@@ -66,44 +66,36 @@ def _leaf_warnings(card: Card, paths: List[str]) -> List[str]:
     """
     out = []
     for path in paths:
-        leaf = card.leaf(path)
+        leaf = profile.leaf(path)
         if not leaf:
             continue
         for caveat in leaf.caveats:
             out.append("{0}: {1}".format(path, caveat))
-        if leaf.code_system is not None and leaf.code_system.mixed:
-            out.append(
-                "{0}: values span {1}. Match concepts across every system or "
-                "you will undercount.".format(path, leaf.code_system.describe())
-            )
         if not leaf.is_detailed:
             allowed = ", ".join(leaf.releasable_as) or "aggregates only"
             out.append(
-                "{0}: access is {1} -- releasable as {2}.".format(
-                    path, leaf.access_level, allowed)
-            )
+                "{0}: released as {1} -- raw values will not clear output "
+                "review.".format(path, allowed))
     return out
 
 
-def _grain_warning(card: Card) -> List[str]:
-    ratio = card.grain.rows_per_entity
-    if ratio and ratio >= 1.5:
-        return ["Rows are not independent: about {0:,.0f} rows per entity, "
-                "unevenly distributed. Every row-level statistic is weighted "
-                "by row count.".format(ratio)]
-    return []
+def _grain_warning(profile: Profile) -> List[str]:
+    """Rows may repeat the same entity, and nothing here can rule that out."""
+    if profile.has_dedupe_key:
+        return []
+    return ["Results are per {0}, not per entity. Identifiers are stripped at "
+            "projection, so if one entity contributes many rows this is "
+            "weighted by row count -- state the denominator in your methods."
+            .format(profile.grain.label)]
 
 
-def _no_dedupe_blocker(card: Card, quantity: str) -> Optional[str]:
+def _no_dedupe_blocker(profile: Profile, quantity: str) -> Optional[str]:
     """The single most common reason an analysis is not computable."""
-    if card.has_dedupe_key:
+    if profile.has_dedupe_key:
         return None
-    if not card.grain.known:
-        return ("The grain of this dataset is unknown -- no card is published "
-                "-- so {0} cannot be shown to be correctly weighted.".format(quantity))
     return ("{0} is a per-entity quantity, and this archetype has no key that "
-            "groups rows back to an entity (identifiers are stripped at "
-            "projection). Computing it anyway yields a figure weighted by row "
+            "groups rows back to an entity -- identifiers are stripped at "
+            "projection. Computing it anyway yields a figure weighted by row "
             "count.".format(quantity))
 
 
@@ -155,7 +147,7 @@ class OverrideError(Exception):
     """An explicitly chosen field cannot fill the role it was given."""
 
 
-def override(card: Card, match: Match, choices: Dict[str, str]) -> Match:
+def override(profile: Profile, match: Match, choices: Dict[str, str]) -> Match:
     """Re-parameterise a match with fields the researcher chose.
 
     Overrides are validated, not trusted: a chosen field still has to be the
@@ -174,11 +166,11 @@ def override(card: Card, match: Match, choices: Dict[str, str]) -> Match:
             raise OverrideError(
                 "'{0}' takes no parameter '{1}'. It takes: {2}.".format(
                     match.key, name, ", ".join(sorted(params)) or "none"))
-        leaf = card.leaf(path)
+        leaf = profile.leaf(path)
         if leaf is None:
             raise OverrideError(
                 "'{0}' is not a field in this dataset. Available: {1}.".format(
-                    path, ", ".join(sorted(card.leaves))))
+                    path, ", ".join(sorted(profile.leaves))))
         role = PARAM_ROLES.get(name)
         if role and not _ROLE_TESTS[role](leaf):
             raise OverrideError(
@@ -186,32 +178,32 @@ def override(card: Card, match: Match, choices: Dict[str, str]) -> Match:
                     name, _ROLE_NAMES[role], path, leaf.type))
         params[name] = path
 
-    warnings = list(match.warnings) + _leaf_warnings(card, sorted(set(params.values())))
+    warnings = list(match.warnings) + _leaf_warnings(profile, sorted(set(params.values())))
     blockers = []
 
     # A stratum with too many levels is unreleasable however it was chosen.
     for name in ("rows", "cols", "by", "outcome"):
         path = params.get(name)
-        leaf = card.leaf(path) if path else None
+        leaf = profile.leaf(path) if path else None
         if leaf and leaf.cardinality and leaf.cardinality > MAX_STRATA:
             blockers.append(
                 "{0} has {1:,} distinct values. A table over that many levels "
                 "cannot clear a suppression threshold of {2}.".format(
-                    path, leaf.cardinality, card.policy.min_cell))
+                    path, leaf.cardinality, profile.min_cell))
 
-    if match.key in ("cross_tab", "composition") and card.grain.rows:
+    if match.key in ("cross_tab", "composition") and profile.grain.rows:
         cells = 1
         for name in ("rows", "cols", "by", "outcome"):
-            leaf = card.leaf(params[name]) if params.get(name) else None
+            leaf = profile.leaf(params[name]) if params.get(name) else None
             if leaf and leaf.cardinality:
                 cells *= leaf.cardinality
         if cells > 1:
-            expected = card.grain.rows / float(cells)
+            expected = profile.grain.rows / float(cells)
             if expected < 5:
                 blockers.append(
                     "Those fields give {0:,} cells over {1:,} rows -- about "
                     "{2:.1f} expected per cell, below the 5 a chi-square test "
-                    "needs.".format(cells, card.grain.rows, expected))
+                    "needs.".format(cells, profile.grain.rows, expected))
 
     seen, deduped = set(), []
     for warning in warnings:
@@ -237,47 +229,42 @@ def _pick(leaves: List[Leaf], exclude: Optional[List[str]] = None) -> Optional[L
     return None
 
 
-def _describe_missing(card: Card, want: str) -> str:
+def _describe_missing(profile: Profile, want: str) -> str:
     """Explain a missing requirement -- and do not blame the archetype for it.
 
-    When no card is published the field types are unknown, so nothing matches
+    When no profile is published the field types are unknown, so nothing matches
     a typed requirement. Reporting that as "this archetype grants no
     categorical field" sends the researcher to argue with their data owner
     about the wrong thing.
     """
-    if not card.types_known:
-        return ("No dataset card is published, so the type of every field is "
-                "unknown and none can be matched to a {0}. The fields "
-                "themselves are granted ({1}) -- ask the data owner to publish "
-                "a card.".format(want, ", ".join(sorted(card.leaves))))
     return "This archetype grants no {0}. Fields available: {1}.".format(
-        want, ", ".join(sorted(card.leaves)) or "none")
+        want, ", ".join(sorted(profile.leaves)) or "none")
 
 
 # -- entries ---------------------------------------------------------------
 
-def _eval_describe(card: Card) -> Match:
-    paths = sorted(card.leaves)
+def _eval_describe(profile: Profile) -> Match:
+    paths = sorted(profile.leaves)
     return Match(
         key="describe",
         title="Cohort description",
         status=FEASIBLE if paths else BLOCKED,
-        unit=card.grain.label,
+        unit=profile.grain.label,
         summary="Counts, ranges and distributions for every granted field, "
-                "reported per {0}.".format(card.grain.label),
+                "reported per {0}.".format(profile.grain.label),
         params={"fields": ", ".join(paths)},
         blockers=[] if paths else ["This archetype grants no fields."],
-        warnings=_leaf_warnings(card, paths) + _grain_warning(card),
+        warnings=_leaf_warnings(profile, paths) + _grain_warning(profile),
         command="epsilon snippet describe",
     )
 
 
-def _eval_prevalence(card: Card) -> Match:
-    outcome = _pick(card.discrete_leaves(max_cardinality=MAX_STRATA))
+def _eval_prevalence(profile: Profile) -> Match:
+    outcome = _pick(profile.discrete_leaves(max_cardinality=MAX_STRATA))
     blockers, unlock = [], None
     if outcome is None:
-        blockers.append(_describe_missing(card, "categorical or coded field to use as an outcome"))
-    dedupe = _no_dedupe_blocker(card, "Prevalence")
+        blockers.append(_describe_missing(profile, "categorical or coded field to use as an outcome"))
+    dedupe = _no_dedupe_blocker(profile, "Prevalence")
     if dedupe:
         blockers.append(dedupe)
         unlock = _UNLOCK_DEDUPE
@@ -289,70 +276,70 @@ def _eval_prevalence(card: Card) -> Match:
         summary="Share of entities with a given characteristic.",
         params={"outcome": outcome.path} if outcome else {},
         blockers=blockers,
-        warnings=_leaf_warnings(card, [outcome.path] if outcome else []),
+        warnings=_leaf_warnings(profile, [outcome.path] if outcome else []),
         unlock=unlock,
         command=None if blockers else "epsilon snippet prevalence",
     )
 
 
-def _eval_composition(card: Card) -> Match:
+def _eval_composition(profile: Profile) -> Match:
     """The record-level question that survives when prevalence does not."""
-    outcome = _pick(card.discrete_leaves(max_cardinality=MAX_STRATA))
-    stratum = _pick(card.discrete_leaves(max_cardinality=MAX_STRATA),
+    outcome = _pick(profile.discrete_leaves(max_cardinality=MAX_STRATA))
+    stratum = _pick(profile.discrete_leaves(max_cardinality=MAX_STRATA),
                     exclude=[outcome.path] if outcome else [])
     blockers = []
     if outcome is None or stratum is None:
-        blockers.append(_describe_missing(card, "two categorical or coded fields"))
+        blockers.append(_describe_missing(profile, "two categorical or coded fields"))
     used = [l.path for l in (outcome, stratum) if l]
-    warnings = _leaf_warnings(card, used)
-    if not card.has_dedupe_key and card.grain.known:
+    warnings = _leaf_warnings(profile, used)
+    if not profile.has_dedupe_key:
         warnings.insert(0, (
             "This answers a narrower question than prevalence: it describes "
             "{0}s, not entities. State that denominator in your methods."
-        ).format(card.grain.label))
+        ).format(profile.grain.label))
     return Match(
         key="composition",
         title="Composition by stratum",
         status=BLOCKED if blockers else FEASIBLE,
-        unit=card.grain.label,
+        unit=profile.grain.label,
         summary="Share of {0}s with a characteristic, broken down by a "
-                "second field.".format(card.grain.label),
+                "second field.".format(profile.grain.label),
         params={"outcome": outcome.path, "by": stratum.path} if not blockers else {},
         blockers=blockers,
-        warnings=warnings + _grain_warning(card),
+        warnings=warnings + _grain_warning(profile),
         command=None if blockers else _command("composition", outcome=outcome.path, by=stratum.path),
     )
 
 
-def _eval_cross_tab(card: Card) -> Match:
-    candidates = card.discrete_leaves(max_cardinality=MAX_STRATA)
+def _eval_cross_tab(profile: Profile) -> Match:
+    candidates = profile.discrete_leaves(max_cardinality=MAX_STRATA)
     a = _pick(candidates)
     b = _pick(candidates, exclude=[a.path] if a else [])
     blockers = []
     if a is None or b is None:
         blockers.append(_describe_missing(
-            card, "two categorical fields with at most {0} levels".format(MAX_STRATA)))
+            profile, "two categorical fields with at most {0} levels".format(MAX_STRATA)))
     cells = None
     if a and b and a.cardinality and b.cardinality:
         cells = a.cardinality * b.cardinality
-    warnings = _leaf_warnings(card, [l.path for l in (a, b) if l]) + _grain_warning(card)
-    if cells and card.grain.rows:
-        expected = card.grain.rows / float(cells)
+    warnings = _leaf_warnings(profile, [l.path for l in (a, b) if l]) + _grain_warning(profile)
+    if cells and profile.grain.rows:
+        expected = profile.grain.rows / float(cells)
         if expected < 5:
             blockers.append(
                 "The table would have {0:,} cells over {1:,} rows -- about "
                 "{2:.1f} expected per cell, below the 5 a chi-square test "
                 "needs and below the suppression threshold of {3}.".format(
-                    cells, card.grain.rows, expected, card.policy.min_cell))
-        elif expected < card.policy.min_cell * 2:
+                    cells, profile.grain.rows, expected, profile.min_cell))
+        elif expected < profile.min_cell * 2:
             warnings.append(
                 "About {0:.0f} expected per cell. Sparse cells will be "
-                "suppressed at n < {1}.".format(expected, card.policy.min_cell))
+                "suppressed at n < {1}.".format(expected, profile.min_cell))
     return Match(
         key="cross_tab",
         title="Cross-tabulation with chi-square",
         status=BLOCKED if blockers else FEASIBLE,
-        unit=card.grain.label,
+        unit=profile.grain.label,
         summary="Association between two categorical fields.",
         params={"rows": a.path, "cols": b.path} if not blockers else {},
         blockers=blockers,
@@ -361,141 +348,143 @@ def _eval_cross_tab(card: Card) -> Match:
     )
 
 
-def _eval_group_compare(card: Card) -> Match:
-    value = _pick(card.numeric_leaves(detailed_only=True))
-    group = _pick(card.binary_leaves())
+def _eval_group_compare(profile: Profile) -> Match:
+    value = _pick(profile.numeric_leaves(detailed_only=True))
+    group = _pick(profile.binary_leaves())
     blockers = []
     if value is None:
-        blockers.append(_describe_missing(card, "numeric field at DETAILED access"))
+        blockers.append(_describe_missing(profile, "numeric field at DETAILED access"))
     if group is None:
-        blockers.append(_describe_missing(card, "two-level categorical field to compare across"))
-    warnings = _leaf_warnings(card, [l.path for l in (value, group) if l])
-    if not card.has_dedupe_key and card.grain.rows_per_entity:
+        blockers.append(_describe_missing(profile, "two-level categorical field to compare across"))
+    warnings = _leaf_warnings(profile, [l.path for l in (value, group) if l])
+    if not profile.has_dedupe_key:
         blockers.append(
-            "Rows are repeated measures of the same entities ({0:,.0f} per "
-            "entity) and there is no key to collapse them, so the "
-            "independence assumption of a two-sample test does not hold."
-            .format(card.grain.rows_per_entity))
+            "A two-sample test assumes one observation per entity. With no key "
+            "to group rows, that cannot be established -- an entity "
+            "contributing many rows would be counted many times.")
     return Match(
         key="group_compare",
         title="Two-group comparison",
         status=BLOCKED if blockers else FEASIBLE,
-        unit="entity" if card.has_dedupe_key else card.grain.label,
+        unit="entity" if profile.has_dedupe_key else profile.grain.label,
         summary="Whether a numeric field differs between two groups.",
         params={"value": value.path, "group": group.path} if not blockers else {},
         blockers=blockers,
         warnings=warnings,
-        unlock=_UNLOCK_DEDUPE if not card.has_dedupe_key else None,
+        unlock=_UNLOCK_DEDUPE if not profile.has_dedupe_key else None,
         command=None if blockers else _command("group_compare", value=value.path, group=group.path),
     )
 
 
-def _eval_logistic(card: Card) -> Match:
-    outcome = _pick(card.binary_leaves())
-    covariates = [l for l in card.all_leaves()
+def _eval_logistic(profile: Profile) -> Match:
+    outcome = _pick(profile.binary_leaves())
+    covariates = [l for l in profile.all_leaves()
                   if l.is_detailed and l is not outcome
                   and (l.is_numeric or (l.is_discrete and (l.cardinality or 99) <= MAX_STRATA))]
     if outcome:
         covariates = [l for l in covariates if l.path != outcome.path]
     blockers = []
     if outcome is None:
-        blockers.append(_describe_missing(card, "binary outcome field"))
+        blockers.append(_describe_missing(profile, "binary outcome field"))
     if not covariates:
-        blockers.append(_describe_missing(card, "covariate at DETAILED access"))
-    if not card.has_dedupe_key and card.grain.rows_per_entity:
+        blockers.append(_describe_missing(profile, "covariate at DETAILED access"))
+    if not profile.has_dedupe_key:
         blockers.append(
-            "Observations are not independent: about {0:,.0f} rows per entity "
-            "with no key to collapse them. A logistic model over these rows "
-            "would report standard errors that are far too small."
-            .format(card.grain.rows_per_entity))
-    warnings = _leaf_warnings(card, [l.path for l in ([outcome] if outcome else []) + covariates])
-    if card.grain.rows and covariates:
-        capacity = card.grain.rows / float(MIN_EVENTS_PER_VARIABLE)
+            "A logistic model assumes independent observations. With no key to "
+            "group rows, independence cannot be established, and repeated rows "
+            "for one entity would make the standard errors far too small.")
+    warnings = _leaf_warnings(profile, [l.path for l in ([outcome] if outcome else []) + covariates])
+    if profile.grain.rows and covariates:
+        capacity = profile.grain.rows / float(MIN_EVENTS_PER_VARIABLE)
         if len(covariates) > capacity:
             warnings.append(
                 "At {0} events per variable you have room for about {1:.0f} "
                 "covariates.".format(MIN_EVENTS_PER_VARIABLE, capacity))
-    warnings.append("Check events-per-variable on your own cohort: the card "
+    warnings.append("Check events-per-variable on your own cohort: the profile "
                     "reports row counts, not outcome counts.")
     return Match(
         key="logistic",
         title="Logistic regression",
         status=BLOCKED if blockers else FEASIBLE,
-        unit="entity" if card.has_dedupe_key else card.grain.label,
+        unit="entity" if profile.has_dedupe_key else profile.grain.label,
         summary="Association between covariates and a binary outcome.",
         params={"outcome": outcome.path,
                 "covariates": ", ".join(l.path for l in covariates)} if not blockers else {},
         blockers=blockers,
         warnings=warnings,
-        unlock=_UNLOCK_DEDUPE if not card.has_dedupe_key else None,
+        unlock=_UNLOCK_DEDUPE if not profile.has_dedupe_key else None,
         command=None if blockers else _command("logistic", outcome=outcome.path),
     )
 
 
-def _eval_survival(card: Card) -> Match:
-    event = _pick(card.binary_leaves())
-    # A duration must be declared as one. A numeric field whose unit happens to
-    # be "years" -- an age, most often -- is not a time to event, and treating
-    # it as one is precisely the error this catalogue exists to prevent.
-    duration = _pick(card.duration_leaves())
-    temporal = card.temporal_leaves()
-    blockers = []
-    if duration is None and len(temporal) < 2:
-        blockers.append(
-            "Survival analysis needs a time from an origin to an event. This "
-            "archetype grants {0}, and a single timestamp is not a duration."
-            .format("no duration and no pair of dates to difference"
-                    if not temporal else
-                    "only one date ({0})".format(temporal[0].path)))
-    if event is None:
-        blockers.append(_describe_missing(card, "binary event indicator"))
-    dedupe = _no_dedupe_blocker(card, "A survival curve")
+def _eval_survival(profile: Profile) -> Match:
+    """Always refused, and the reason is structural rather than incidental.
+
+    A time to event needs an origin and an event. An archetype expresses
+    neither: it grants columns, not the knowledge of which date starts a clock
+    and which stops it. A single timestamp is not a duration, and a numeric
+    field measured in years is an age, not a follow-up. Guessing either would
+    produce exactly the confidently wrong answer this catalogue exists to
+    prevent, so this stays blocked until an archetype can carry a declared
+    duration.
+    """
+    temporal = profile.temporal_leaves()
+    blockers = [
+        "Survival analysis needs a time from an origin to an event. This "
+        "archetype grants {0}, and nothing declares which date starts a clock "
+        "and which stops it.".format(
+            "no dates" if not temporal else
+            "{0} date field(s)".format(len(temporal)))]
+    dedupe = _no_dedupe_blocker(profile, "A survival curve")
     if dedupe:
         blockers.append(dedupe)
     return Match(
         key="survival",
         title="Survival analysis",
-        status=BLOCKED if blockers else FEASIBLE,
+        status=BLOCKED,
         unit="entity",
         summary="Time from an origin to an event, with censoring.",
-        params=({"duration": duration.path, "event": event.path}
-                if duration and event and not blockers else {}),
+        params={},
         blockers=blockers,
         warnings=[],
-        unlock=("Ask the data owner for a discharge, death or follow-up date "
-                "alongside the existing timestamp -- two dates make a duration."),
+        unlock=("Ask the data owner for a follow-up or discharge date "
+                "alongside an origin date, and for a key that groups rows to "
+                "an entity."),
         command=None,
     )
 
 
-def _eval_trend(card: Card) -> Match:
-    temporal = _pick(card.temporal_leaves())
+def _eval_trend(profile: Profile) -> Match:
+    temporal = _pick(profile.temporal_leaves())
     blockers = []
     if temporal is None:
         blockers.append(
             "This archetype grants no date or timestamp field, so it describes "
             "a cross-section. No trend over time is computable.")
-    warnings = _leaf_warnings(card, [temporal.path] if temporal else [])
+    warnings = _leaf_warnings(profile, [temporal.path] if temporal else [])
     if temporal is not None and not temporal.is_detailed and not temporal.releasable_as:
         blockers.append(
-            "{0} is {1} and the card names no releasable buckets, so no "
+            "{0} is {1} and the profile names no releasable buckets, so no "
             "time axis can be released.".format(temporal.path, temporal.access_level))
-    if temporal is not None and temporal.comparable_across_entities is False:
-        blockers.append(
-            "{0} is not comparable between entities -- the card records that "
-            "values are shifted per entity. Pooling them onto one calendar "
-            "axis produces a trend that describes the shifting, not the data."
+    if temporal is not None:
+        # Whether dates are shifted per entity cannot be measured from the
+        # data -- shifted dates look like ordinary dates. Warn rather than
+        # block, because guessing either way would be wrong.
+        warnings.append(
+            "{0}: de-identified extracts frequently shift dates by a "
+            "per-entity offset, which looks identical to real dates. Confirm "
+            "with the data owner before reading a calendar trend."
             .format(temporal.path))
     return Match(
         key="trend",
         title="Trend over time",
         status=BLOCKED if blockers else FEASIBLE,
-        unit=card.grain.label,
+        unit=profile.grain.label,
         summary="A quantity aggregated into time buckets and compared across them.",
         params={"time": temporal.path,
                 "buckets": ", ".join(temporal.releasable_as) or "raw"} if not blockers else {},
         blockers=blockers,
-        warnings=warnings + _grain_warning(card),
+        warnings=warnings + _grain_warning(profile),
         command=None if blockers else _command("trend", time=temporal.path),
     )
 
@@ -522,18 +511,18 @@ CATALOGUE: List[AnalysisSpec] = [
 SPECS_BY_KEY = dict((spec.key, spec) for spec in CATALOGUE)
 
 
-def evaluate(card: Card, keys: Optional[List[str]] = None) -> List[Match]:
-    """Evaluate the catalogue against a card, feasible entries first."""
+def evaluate(profile: Profile, keys: Optional[List[str]] = None) -> List[Match]:
+    """Evaluate the catalogue against a profile, feasible entries first."""
     specs = CATALOGUE if keys is None else [SPECS_BY_KEY[k] for k in keys if k in SPECS_BY_KEY]
-    matches = [spec.evaluate(card) for spec in specs]
+    matches = [spec.evaluate(profile) for spec in specs]
     order = dict((spec.key, i) for i, spec in enumerate(CATALOGUE))
     matches.sort(key=lambda m: (0 if m.feasible else 1, order.get(m.key, 99)))
     return matches
 
 
-def feasible(card: Card) -> List[Match]:
-    return [m for m in evaluate(card) if m.feasible]
+def feasible(profile: Profile) -> List[Match]:
+    return [m for m in evaluate(profile) if m.feasible]
 
 
-def blocked(card: Card) -> List[Match]:
-    return [m for m in evaluate(card) if not m.feasible]
+def blocked(profile: Profile) -> List[Match]:
+    return [m for m in evaluate(profile) if not m.feasible]

@@ -19,7 +19,7 @@ from sdk.archetype import compile_archetype as compile_arch
 from sdk.archetype import generate_csv_dummy_data
 from sdk.archetype import verify_synthetic_csv
 from . import config as sdk_config
-from sdk import card as card_mod
+from sdk import profile as profile_mod
 from sdk import catalogue as catalogue_mod
 from sdk import checks as checks_mod
 from sdk import explain as explain_mod
@@ -283,20 +283,6 @@ def init(
             typer.echo("No synthetic dataset attached to this dataset — generating dummy data.")
             generate_csv_dummy_data(archetype_data, "generated/data.csv", num_records=10)
             typer.secho("✓ Created generated/data.csv (dummy data)", fg=typer.colors.GREEN)
-
-        # Fetch the dataset card. Optional: older hubs have no such route and
-        # not every owner has authored one, so a miss is normal and the SDK
-        # falls back to describing the archetype alone.
-        card_data = client.get_card(dataset_id)
-        if isinstance(card_data, dict) and card_data:
-            with open("generated/card.json", 'w') as f:
-                json.dump(card_data, f, indent=2)
-            typer.secho("\u2713 Created generated/card.json", fg=typer.colors.GREEN)
-        else:
-            typer.secho(
-                "No dataset card published for this dataset -- 'epsilon explain' "
-                "will describe the archetype alone (types, value domains and the "
-                "grain of a row will be unknown).", fg=typer.colors.YELLOW)
 
         # Compile to models.py in generated folder
         typer.echo("Generating Python models...")
@@ -677,11 +663,11 @@ ai_app = typer.Typer(help="Configure the model the copilot uses. The key is "
 app.add_typer(ai_app, name="ai")
 
 
-def _load_card_or_exit():
+def _profile_project_or_exit():
     """Load the project card, failing with an actionable message."""
     try:
-        return card_mod.load_card(".")
-    except card_mod.CardError as exc:
+        return profile_mod.profile_project(".")
+    except profile_mod.ProfileError as exc:
         typer.secho("Error: {0}".format(exc), fg=typer.colors.RED)
         raise typer.Exit(1)
 
@@ -697,12 +683,7 @@ def explain(
     Reads the dataset card. Needs no API key and makes no network call, and
     the feasibility verdicts are the same ones 'epsilon chat' works from.
     """
-    card = _load_card_or_exit()
-    if card.derived:
-        typer.secho(
-            "No dataset card is published for this archetype -- describing it "
-            "from the archetype alone. Types, value domains and the grain of a "
-            "row are unknown.", fg=typer.colors.YELLOW)
+    card = _profile_project_or_exit()
     if brief:
         typer.echo(explain_mod.render(card))
     else:
@@ -730,7 +711,7 @@ def snippet(
     Fields are chosen automatically; --set overrides one. Overrides are
     validated against the card and cannot make a blocked analysis available.
     """
-    card = _load_card_or_exit()
+    card = _profile_project_or_exit()
     if analysis not in catalogue_mod.SPECS_BY_KEY:
         typer.secho("Unknown analysis '{0}'.".format(analysis), fg=typer.colors.RED)
         typer.echo("Available: " + ", ".join(sorted(catalogue_mod.SPECS_BY_KEY)))
@@ -925,7 +906,7 @@ def chat(
     writes and runs code, and iterates. It cannot overrule a feasibility
     verdict or read a record -- those come from tools, not from the model.
     """
-    card = _load_card_or_exit()
+    card = _profile_project_or_exit()
 
     try:
         from sdk import llm

@@ -119,9 +119,9 @@ API key the platform never sees these calls.
 ### The commands underneath
 
 Four commands help you choose and write an analysis that will actually clear
-output review. All of them read the **dataset card** — the data owner's
-description of what a row means, what each field contains, and which traps the
-dataset carries. `epsilon init` downloads it to `generated/card.json`.
+output review. They read the **dataset itself** -- `epsilon init` downloads the
+archetype-scoped projection, and the SDK measures it. There is nothing for a
+data owner to author and nothing to keep in sync.
 
 ```bash
 epsilon explain                       # the dataset, and every analysis it does
@@ -133,10 +133,27 @@ epsilon snippet describe --chart      # also generate a chart() -> SVG
 epsilon check                         # run the submission rules locally
 ```
 
-Fields are chosen for you; `--set` overrides one. Overrides are validated
-against the card -- a field of the wrong kind, or one with too many levels to
-release, is refused -- and cannot turn a blocked analysis into an available
-one. The command `epsilon explain` prints is exactly the one that reproduces it.
+Fields are chosen for you; `--set` overrides one, validated against what was
+measured. The command `epsilon explain` prints is the one that reproduces it.
+
+### What is measured, and what cannot be
+
+Types, distinct counts, ranges, categories and null rates are counted from the
+projection. Two traps are inferred: a **top-coded maximum** (a pile-up at the
+largest value, which is how age is capped for de-identification) and a **code
+column beside a version column**, where one concept may carry a different code
+per revision. Timestamps default to aggregate-only.
+
+The important refusal needs no measurement at all: **an archetype has no key
+that groups rows back to an entity**, because identifiers are stripped at
+projection. So prevalence, regression and two-group comparison are blocked on
+every archetype until one grants a pseudonymised key -- a property of the
+platform, not something a dataset can get wrong.
+
+What measurement cannot see is stated rather than guessed. Dates shifted per
+entity look exactly like real dates, so trend analysis warns instead of
+blocking. Survival is blocked outright: an archetype grants columns, not the
+knowledge of which date starts a clock and which stops it.
 
 ### Feasibility is decided in code, not by a model
 

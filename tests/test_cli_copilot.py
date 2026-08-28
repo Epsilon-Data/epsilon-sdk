@@ -11,14 +11,12 @@ runner = CliRunner()
 
 
 @pytest.fixture
-def project(tmp_path, card_json, monkeypatch):
-    """A minimal initialised project, with the CWD moved into it."""
-    generated = tmp_path / "generated"
-    generated.mkdir()
-    (generated / "card.json").write_text(json.dumps(card_json), encoding="utf-8")
-    (tmp_path / "main.py").write_text("def main():\n    return {}\n", encoding="utf-8")
-    monkeypatch.chdir(tmp_path)
-    return tmp_path
+def project(dataset_dir, monkeypatch):
+    """An initialised project, with the CWD moved into it."""
+    (dataset_dir / "main.py").write_text("def main():\n    return {}\n",
+                                         encoding="utf-8")
+    monkeypatch.chdir(dataset_dir)
+    return dataset_dir
 
 
 @pytest.fixture
@@ -34,26 +32,21 @@ class TestExplain:
         result = runner.invoke(app, ["explain"])
         assert result.exit_code == 0
         assert "GRAIN" in result.output
-        assert "NO DEDUPE KEY" in result.output
+        assert "NO ENTITY KEY" in result.output
 
     def test_works_with_no_model_configured(self, project, no_model):
         assert runner.invoke(app, ["explain"]).exit_code == 0
 
-    def test_warns_when_no_card_is_published(self, tmp_path, mock_archetype, monkeypatch):
-        generated = tmp_path / "generated"
-        generated.mkdir()
-        (generated / "archetype.json").write_text(json.dumps(mock_archetype),
-                                                  encoding="utf-8")
-        monkeypatch.chdir(tmp_path)
+    def test_reports_what_was_measured_not_what_was_declared(self, project, no_model):
         result = runner.invoke(app, ["explain"])
-        assert result.exit_code == 0
-        assert "No dataset card is published" in result.output
+        assert "measured from the local dataset" in result.output
 
     def test_fails_helpfully_outside_a_project(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         result = runner.invoke(app, ["explain"])
         assert result.exit_code == 1
         assert "epsilon init" in result.output
+        assert "data.csv" in result.output
 
 
 class TestExplainCatalogue:

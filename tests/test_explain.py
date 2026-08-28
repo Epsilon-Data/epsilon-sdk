@@ -1,126 +1,98 @@
 """Tests for the briefing renderer."""
-from sdk.card import Card, derive_card
+from sdk.profile import Profile
 from sdk.explain import render, render_catalogue, render_full, render_summary
 
 
 class TestBriefing:
-    def test_states_the_grain_first(self, card):
-        text = render(card)
+    def test_states_the_grain_first(self, profile):
+        text = render(profile)
         assert "GRAIN" in text
-        assert "One row per diagnosis code." in text
+        assert "One row per record" in text
 
-    def test_lists_every_granted_field(self, card):
-        text = render(card)
-        for path in card.leaves:
+    def test_lists_every_granted_field(self, profile):
+        text = render(profile)
+        for path in profile.leaves:
             assert path in text
 
-    def test_shows_access_level_per_field(self, card):
-        text = render(card)
-        assert "HIGH_LEVEL" in text
-        assert "DETAILED" in text
+    def test_shows_how_an_aggregate_only_field_may_be_released(self, profile):
+        text = render(profile)
+        assert "month, quarter, year" in text
 
-    def test_warns_that_rows_cannot_be_grouped(self, card):
-        assert "NO DEDUPE KEY" in render(card)
+    def test_warns_that_rows_cannot_be_grouped(self, profile):
+        assert "NO ENTITY KEY" in render(profile)
 
-    def test_names_the_most_aggregated_entity_in_the_warning(self, card):
-        # 100 patients vs 275 admissions: patients is the coarser grouping and
-        # the one a researcher is most likely to want.
-        assert "a patient" in render(card)
+    def test_says_per_entity_figures_are_not_computable(self, profile):
+        assert "not computable" in render(profile).lower()
 
-    def test_warns_about_grain_amplification(self, card):
-        text = render(card)
-        assert "GRAIN AMPLIFICATION" in text
-        assert "1,000 rows" in text
+    def test_reports_the_row_count_it_measured(self, profile):
+        assert "4,000 rows" in render(profile)
 
-    def test_warns_about_two_coding_systems(self, card):
-        text = render(card)
-        assert "TWO CODING SYSTEMS" in text
-        assert "ICD-9-CM" in text
-        assert "diagnoses.icd_version" in text  # the discriminator
+    def test_flags_a_possible_mixed_code_column(self, profile):
+        text = render(profile)
+        assert "more than one revision" in text
+        assert "diagnoses.icd_version" in text
 
-    def test_warns_about_aggregate_only_fields(self, card):
-        text = render(card)
+    def test_warns_about_aggregate_only_fields(self, profile):
+        text = render(profile)
         assert "AGGREGATE ONLY" in text
         assert "month, quarter, year" in text
 
-    def test_surfaces_leaf_caveats(self, card):
-        assert "recorded as 91" in render(card)
+    def test_surfaces_leaf_caveats(self, profile):
+        assert "capped at 91" in render(profile)
 
-    def test_lists_what_the_archetype_excludes(self, card):
-        assert "No discharge date" in render(card)
+    def test_says_the_description_was_measured_not_declared(self, profile):
+        assert "measured from the local dataset" in render(profile)
 
-    def test_says_the_local_data_is_synthetic(self, card):
-        assert "SYNTHETIC" in render(card)
+    def test_says_the_local_data_is_synthetic(self, profile):
+        assert "SYNTHETIC" in render(profile)
 
-    def test_no_line_runs_past_the_terminal(self, card):
-        assert max(len(l) for l in render(card).splitlines()) <= 100
-
-
-class TestDegradedCard:
-    def test_says_the_grain_is_unknown(self, mock_archetype):
-        text = render(derive_card(mock_archetype))
-        assert "GRAIN UNKNOWN" in text or "Unknown" in text
-
-    def test_marks_itself_as_derived(self, mock_archetype):
-        assert "DERIVED" in render(derive_card(mock_archetype))
-
-    def test_renders_without_a_card(self, mock_archetype):
-        # Must not raise: this is the path for every project whose owner has
-        # not authored a card.
-        assert len(render(derive_card(mock_archetype))) > 0
-
-
-class TestEmptyArchetype:
-    def test_says_so_rather_than_rendering_an_empty_table(self):
-        card = Card.from_json({"cardVersion": 1, "title": "Empty", "leaves": {}})
-        assert "grants no fields" in render(card)
+    def test_no_line_runs_past_the_terminal(self, profile):
+        assert max(len(l) for l in render(profile).splitlines()) <= 100
 
 
 class TestSummary:
-    def test_is_one_line(self, card):
-        assert "\n" not in render_summary(card)
+    def test_is_one_line(self, profile):
+        assert "\n" not in render_summary(profile)
 
-    def test_mentions_the_missing_key(self, card):
-        assert "no dedupe key" in render_summary(card)
+    def test_mentions_the_missing_key(self, profile):
+        assert "no entity key" in render_summary(profile)
 
 
 class TestCatalogueRendering:
     """The catalogue listing moved here from the removed `suggest` command:
     the model-free half was worth keeping, the keyword guessing was not."""
 
-    def test_lists_available_and_unavailable(self, card):
-        text = render_catalogue(card)
+    def test_lists_available_and_unavailable(self, profile):
+        text = render_catalogue(profile)
         assert "AVAILABLE (" in text
         assert "NOT AVAILABLE (" in text
 
-    def test_a_refusal_carries_its_reason(self, card):
-        text = render_catalogue(card)
+    def test_a_refusal_carries_its_reason(self, profile):
+        text = render_catalogue(profile)
         assert "[NO] Prevalence" in text
         assert "why not:" in text
 
-    def test_a_refusal_carries_its_unlock_path(self, card):
-        assert "unlock:" in render_catalogue(card)
+    def test_a_refusal_carries_its_unlock_path(self, profile):
+        assert "unlock:" in render_catalogue(profile)
 
-    def test_feasible_entries_show_the_command(self, card):
-        assert "epsilon snippet" in render_catalogue(card)
+    def test_feasible_entries_show_the_command(self, profile):
+        assert "epsilon snippet" in render_catalogue(profile)
 
-    def test_notes_are_capped(self, card_json):
-        from sdk.card import Card
-        card_json["leaves"]["patient.age"]["caveats"] = [
+    def test_notes_are_capped(self, profile):
+        profile.leaf("patient.age").caveats = [
             "caveat {0}".format(i) for i in range(8)]
-        text = render_catalogue(Card.from_json(card_json))
-        assert "more note" in text
+        assert "more note" in render_catalogue(profile)
 
-    def test_lines_stay_within_a_terminal(self, card):
-        assert max(len(l) for l in render_catalogue(card).splitlines()) <= 100
+    def test_lines_stay_within_a_terminal(self, profile):
+        assert max(len(l) for l in render_catalogue(profile).splitlines()) <= 100
 
 
 class TestRenderFull:
-    def test_combines_the_briefing_and_the_catalogue(self, card):
-        text = render_full(card)
+    def test_combines_the_briefing_and_the_catalogue(self, profile):
+        text = render_full(profile)
         assert "GRAIN" in text
         assert "AVAILABLE (" in text
 
-    def test_the_briefing_comes_first(self, card):
-        text = render_full(card)
+    def test_the_briefing_comes_first(self, profile):
+        text = render_full(profile)
         assert text.index("GRAIN") < text.index("AVAILABLE (")

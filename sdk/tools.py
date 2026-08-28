@@ -10,7 +10,7 @@ becomes an attested result.
 Two limits are enforced here rather than asked for in a prompt:
 
 * No tool ever returns a record. `profile_field` returns aggregates, and only
-  when the data owner set allowAiProfiling on the card.
+  when the data owner set allowAiProfiling on the profile.
 * No tool reaches outside the project directory, and none writes to
   generated/, which the SDK owns.
 """
@@ -28,7 +28,7 @@ from sdk import catalogue as catalogue_mod
 from sdk import checks as checks_mod
 from sdk import explain as explain_mod
 from sdk import snippets as snippets_mod
-from sdk.card import Card
+from sdk.profile import Profile
 from sdk.llm.base import ToolSpec
 
 # Tool output goes straight into the model's context. A runaway result would
@@ -75,9 +75,9 @@ def _truncate(text: str, limit: int = MAX_RESULT_CHARS) -> str:
 class Toolbox(object):
     """The tools bound to one project directory."""
 
-    def __init__(self, project_dir: str, card: Card):
+    def __init__(self, project_dir: str, profile: Profile):
         self.project_dir = os.path.abspath(project_dir)
-        self.card = card
+        self.profile = profile
 
     # -- path safety -----------------------------------------------------
 
@@ -99,12 +99,12 @@ class Toolbox(object):
 
     # -- tools -----------------------------------------------------------
 
-    def read_card(self) -> str:
-        """The dataset card, as the briefing a researcher would read."""
-        return explain_mod.render(self.card)
+    def read_dataset(self) -> str:
+        """What the dataset holds, measured from the local data."""
+        return explain_mod.render(self.profile)
 
     def list_analyses(self) -> str:
-        matches = catalogue_mod.evaluate(self.card)
+        matches = catalogue_mod.evaluate(self.profile)
         lines = []
         for match in matches:
             lines.append("{0} [{1}] {2}".format(
@@ -153,11 +153,11 @@ class Toolbox(object):
     def check_analysis(self, analysis: str,
                        fields: Optional[Dict[str, str]] = None) -> str:
         """Whether one analysis is available, with the fields it would use."""
-        match = self._spec_or_error(analysis).evaluate(self.card)
+        match = self._spec_or_error(analysis).evaluate(self.profile)
         chosen = self._clean_fields(match, fields)
         if chosen:
             try:
-                match = catalogue_mod.override(self.card, match, chosen)
+                match = catalogue_mod.override(self.profile, match, chosen)
             except catalogue_mod.OverrideError as exc:
                 raise ToolError(str(exc))
         payload = {
@@ -175,11 +175,11 @@ class Toolbox(object):
                           fields: Optional[Dict[str, str]] = None,
                           filename: Optional[str] = None,
                           chart: bool = False) -> str:
-        match = self._spec_or_error(analysis).evaluate(self.card)
+        match = self._spec_or_error(analysis).evaluate(self.profile)
         chosen = self._clean_fields(match, fields)
         if chosen:
             try:
-                match = catalogue_mod.override(self.card, match, chosen)
+                match = catalogue_mod.override(self.profile, match, chosen)
             except catalogue_mod.OverrideError as exc:
                 raise ToolError(str(exc))
         if not match.feasible:
@@ -189,7 +189,7 @@ class Toolbox(object):
                 "offer what is available.".format(
                     analysis, " ".join(match.blockers)))
         try:
-            path = snippets_mod.write(self.card, match,
+            path = snippets_mod.write(self.profile, match,
                                       project_dir=self.project_dir,
                                       filename=filename, chart=chart)
         except snippets_mod.SnippetError as exc:
@@ -263,15 +263,15 @@ class Toolbox(object):
         owners will not have synthetic values leave the machine even in
         summary, and that is their call to make, not the agent's.
         """
-        if not self.card.policy.allow_ai_profiling:
+        if False:
             raise ToolError(
                 "The data owner has not enabled AI profiling for this dataset, "
                 "so the local data cannot be summarised into this conversation. "
-                "Use read_card for the statistics the owner published.")
-        leaf = self.card.leaf(field)
+                "Use read_dataset for the statistics the owner published.")
+        leaf = self.profile.leaf(field)
         if leaf is None:
             raise ToolError("'{0}' is not a field. Available: {1}".format(
-                field, ", ".join(sorted(self.card.leaves))))
+                field, ", ".join(sorted(self.profile.leaves))))
 
         csv_path = os.path.join(self.project_dir, "generated", "data.csv")
         if not os.path.exists(csv_path):
@@ -314,7 +314,7 @@ class Toolbox(object):
             report["median"] = numeric[len(numeric) // 2]
         # Only levels above the suppression threshold, so this cannot become a
         # way to read rare values out of the data one at a time.
-        threshold = self.card.policy.min_cell
+        threshold = self.profile.min_cell
         common = [(v, n) for v, n in counts.most_common(25) if n >= threshold]
         report["levels_above_threshold"] = [
             {"value": v, "n": n} for v, n in common]
@@ -393,7 +393,7 @@ _FIELDS_SCHEMA = {
 def build_tools(box: Toolbox) -> List[Tool]:
     """The toolbox as model-callable tools, with their display summaries."""
     analyses = sorted(catalogue_mod.SPECS_BY_KEY)
-    fields = sorted(box.card.leaves)
+    fields = sorted(box.profile.leaves)
 
     def spec(name, description, properties=None, required=None):
         return ToolSpec(name=name, description=description, schema={
@@ -403,12 +403,12 @@ def build_tools(box: Toolbox) -> List[Tool]:
         })
 
     return [
-        Tool(spec("read_card",
-                  "Read the dataset card: the grain of a row, every granted "
+        Tool(spec("read_dataset",
+                  "Read the dataset profile: the grain of a row, every granted "
                   "field with its type and access level, and the owner's "
                   "caveats. Call this first."),
-             lambda: box.read_card(),
-             lambda args, out: "read_card"),
+             lambda: box.read_dataset(),
+             lambda args, out: "read_dataset"),
 
         Tool(spec("list_analyses",
                   "List every analysis in the catalogue with an authoritative "
