@@ -210,3 +210,71 @@ def create_dataset(csv_file=None):
     with open(path, newline="", encoding="utf-8") as fh:
         return DatasetWrapper(list(csv.DictReader(fh)))
 '''
+
+
+class TestCharts:
+    """A figure is an output artifact. The generator only ever draws the
+    released aggregate, never records, because a chart built from rows is a
+    disclosure risk no output review can see."""
+
+    def test_chartable_analyses_compile_with_a_chart(self, card):
+        for key in ("describe", "composition", "cross_tab"):
+            match = SPECS_BY_KEY[key].evaluate(card)
+            assert compiles(render(card, match, chart=True))
+
+    def test_the_chart_draws_the_result_not_the_dataset(self, card):
+        code = render(card, SPECS_BY_KEY["cross_tab"].evaluate(card), chart=True)
+        chart_fn = code[code.index("def chart("):]
+        assert "create_dataset" not in chart_fn
+        assert "result[" in chart_fn
+
+    def test_suppressed_cells_survive_into_the_chart(self, card):
+        code = render(card, SPECS_BY_KEY["cross_tab"].evaluate(card), chart=True)
+        # the chart consumes r["n"], which main() already set to None when
+        # below the threshold
+        assert 'r["n"]' in code
+
+    def test_an_unchartable_analysis_says_so(self, unblocked_card):
+        match = SPECS_BY_KEY["prevalence"].evaluate(unblocked_card)
+        with pytest.raises(SnippetError) as exc:
+            render(unblocked_card, match, chart=True)
+        assert "no chart" in str(exc.value)
+        assert "Chartable analyses:" in str(exc.value)
+
+    def test_no_chart_is_added_unless_asked(self, card):
+        code = render(card, SPECS_BY_KEY["describe"].evaluate(card))
+        assert "def chart(" not in code
+
+    def test_the_helper_is_written_alongside(self, tmp_path, card):
+        from sdk.snippets import CHART_HELPER_NAME
+        write(card, SPECS_BY_KEY["describe"].evaluate(card),
+              project_dir=str(tmp_path), chart=True)
+        assert (tmp_path / "analyses" / CHART_HELPER_NAME).exists()
+
+    def test_the_helper_needs_no_third_party_package(self):
+        from sdk.snippets import CHART_MODULE
+        tree = ast.parse(CHART_MODULE)
+        imported = [n for n in ast.walk(tree)
+                    if isinstance(n, (ast.Import, ast.ImportFrom))]
+        assert imported == [], "chart helper must be stdlib-only"
+
+    def test_the_helper_passes_the_submission_checks(self):
+        from sdk.checks import check_source
+        from sdk.snippets import CHART_MODULE
+        assert check_source("_charts.py", CHART_MODULE) == []
+
+    def test_a_suppressed_value_is_drawn_as_suppressed_not_as_zero(self):
+        from sdk.snippets import CHART_MODULE
+        ns = {}
+        exec(CHART_MODULE, ns)
+        svg = ns["bar_chart"]("t", [("shown", 100), ("hidden", None)])
+        assert "suppressed" in svg
+        # the suppressed row must not carry a readable magnitude
+        assert ">100<" in svg or "100" in svg
+        assert svg.count("fill=\"#c2cdc9\"") == 1
+
+    def test_charts_generated_from_a_card_pass_the_checks(self, card):
+        from sdk.checks import check_source
+        for key in ("describe", "composition", "cross_tab"):
+            code = render(card, SPECS_BY_KEY[key].evaluate(card), chart=True)
+            assert [f for f in check_source("a.py", code) if f.blocking] == []

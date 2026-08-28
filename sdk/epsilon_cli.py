@@ -715,6 +715,9 @@ def snippet(
         set_: Optional[List[str]] = typer.Option(
             None, "--set", metavar="NAME=FIELD",
             help="Choose a field, e.g. --set by=patient.gender. Repeatable."),
+        chart: bool = typer.Option(
+            False, "--chart",
+            help="Also generate a chart() drawing the released result."),
         output: str = typer.Option(None, "--output", "-o", help="Filename under analyses/."),
         show: bool = typer.Option(False, "--show", help="Print the code instead of writing it.")
 ):
@@ -758,11 +761,15 @@ def snippet(
             typer.echo("  " + match.unlock)
         raise typer.Exit(1)
 
-    if show:
-        typer.echo(snippets_mod.render(card, match))
-        return
-
-    path = snippets_mod.write(card, match, project_dir=".", filename=output)
+    try:
+        if show:
+            typer.echo(snippets_mod.render(card, match, chart=chart))
+            return
+        path = snippets_mod.write(card, match, project_dir=".",
+                                  filename=output, chart=chart)
+    except snippets_mod.SnippetError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED)
+        raise typer.Exit(1)
     typer.secho("Wrote {0}".format(path), fg=typer.colors.GREEN)
     for warning in match.warnings:
         typer.secho("  note: " + warning, fg=typer.colors.YELLOW)

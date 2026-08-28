@@ -32,6 +32,12 @@ NETWORK_MODULES = {"socket", "requests", "urllib", "urllib2", "urllib3", "http",
 
 # Modules that execute other programs or arbitrary code.
 EXEC_MODULES = {"subprocess", "pty", "multiprocessing"}
+
+# Plotting libraries. Not forbidden, but a figure is an output artifact that
+# review cannot inspect the way it inspects a table, and none of these are in
+# the enclave's requirements. The generated charts draw from the released
+# aggregate and emit SVG, which is text.
+PLOT_MODULES = {"matplotlib", "seaborn", "plotly", "bokeh", "altair", "pygal"}
 EXEC_BUILTINS = {"eval", "exec", "compile", "__import__"}
 
 MAX_SCAN_BYTES = 2 * 1024 * 1024
@@ -119,6 +125,14 @@ class _SourceVisitor(ast.NodeVisitor):
                 "imports '{0}': analyses run with no network and any egress "
                 "attempt is a policy violation".format(name),
                 "remove the import; fetch what you need before submitting"))
+        elif root in PLOT_MODULES:
+            self.findings.append(Finding(
+                "chart-from-released-result", WARN, self.path, lineno,
+                "imports '{0}': a figure is an output artifact, and this one "
+                "is not in the enclave's requirements".format(name),
+                "generate a chart with 'epsilon snippet <analysis> --chart' -- "
+                "it draws the suppressed result and emits SVG, which review "
+                "can read"))
         elif root in EXEC_MODULES:
             self.findings.append(Finding(
                 "no-subprocess", BLOCK, self.path, lineno,

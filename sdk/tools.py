@@ -173,7 +173,8 @@ class Toolbox(object):
 
     def generate_analysis(self, analysis: str,
                           fields: Optional[Dict[str, str]] = None,
-                          filename: Optional[str] = None) -> str:
+                          filename: Optional[str] = None,
+                          chart: bool = False) -> str:
         match = self._spec_or_error(analysis).evaluate(self.card)
         chosen = self._clean_fields(match, fields)
         if chosen:
@@ -187,8 +188,12 @@ class Toolbox(object):
                 "generated for it. Reason: {1} Tell the researcher this, and "
                 "offer what is available.".format(
                     analysis, " ".join(match.blockers)))
-        path = snippets_mod.write(self.card, match, project_dir=self.project_dir,
-                                  filename=filename)
+        try:
+            path = snippets_mod.write(self.card, match,
+                                      project_dir=self.project_dir,
+                                      filename=filename, chart=chart)
+        except snippets_mod.SnippetError as exc:
+            raise ToolError(str(exc))
         relative = os.path.relpath(path, self.project_dir)
         with open(path, "r", encoding="utf-8") as fh:
             code = fh.read()
@@ -431,10 +436,15 @@ def build_tools(box: Toolbox) -> List[Tool]:
                    "fields": _FIELDS_SCHEMA,
                    "filename": {"type": "string",
                                 "description": "Bare filename, e.g. "
-                                               "'table1.py'. Not a path."}},
+                                               "'table1.py'. Not a path."},
+                   "chart": {"type": "boolean",
+                             "description": "Also generate a chart() that "
+                                            "draws the released result as SVG. "
+                                            "Use this instead of writing "
+                                            "plotting code by hand."}},
                   ["analysis"]),
-             lambda analysis, fields=None, filename=None:
-                 box.generate_analysis(analysis, fields, filename),
+             lambda analysis, fields=None, filename=None, chart=False:
+                 box.generate_analysis(analysis, fields, filename, chart),
              lambda args, out: "generate_analysis({0})".format(args.get("analysis"))),
 
         Tool(spec("list_files", "List the files in the project."),

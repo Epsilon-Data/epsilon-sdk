@@ -129,6 +129,7 @@ epsilon explain                       # the dataset, and every analysis it does
 epsilon explain --brief               # dataset only
 epsilon snippet <analysis>            # generate starter code under analyses/
 epsilon snippet cross_tab --set rows=patient.gender --set cols=admissions.type
+epsilon snippet describe --chart      # also generate a chart() -> SVG
 epsilon check                         # run the submission rules locally
 ```
 
@@ -157,6 +158,18 @@ patient, prevalence comes back as:
 
 That analysis would otherwise run cleanly, pass the submission gate and come
 back attested — and be wrong.
+
+### Charts draw the released result, never the records
+
+`--chart` adds a `chart()` that renders the *same suppressed aggregate*
+`main()` returns. A cell below the threshold is drawn as a suppressed marker
+with no length, so it cannot be read back off the axis, and the figure states
+how many levels were held back.
+
+Output is SVG from a stdlib-only helper written to `analyses/_charts.py`. Two
+reasons: the enclave's requirements carry no plotting library, and an SVG is
+text a reviewer -- and `epsilon check` -- can actually read, unlike a PNG.
+Importing matplotlib or seaborn is a warning pointing here, not a block.
 
 ### Generated code carries the rules
 

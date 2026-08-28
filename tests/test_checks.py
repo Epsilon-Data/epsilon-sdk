@@ -289,3 +289,20 @@ class TestPackaging:
         })
         findings = check_packaging(root, "main.py", {"generated", "analyses"})
         assert len(findings) == 1
+
+
+class TestPlottingLibraries:
+    def test_matplotlib_warns_and_points_at_the_generator(self):
+        findings = check_source("a.py", "import matplotlib.pyplot as plt\n")
+        assert "chart-from-released-result" in rules(findings)
+        assert not findings[0].blocking
+        assert "--chart" in findings[0].fix
+
+    def test_other_plotting_libraries_too(self):
+        for module in ("seaborn", "plotly", "altair"):
+            assert "chart-from-released-result" in rules(
+                check_source("a.py", "import {0}\n".format(module)))
+
+    def test_it_is_a_warning_not_a_block(self):
+        findings = check_source("a.py", "import seaborn\n")
+        assert [f for f in findings if f.blocking] == []
