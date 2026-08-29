@@ -363,3 +363,253 @@ class TestTableFormatting:
         src = self._parser()
         # the rule row is required, so prose with pipes is not mistaken for one
         assert r"/^\|[\s:|-]+\|$/" in src
+
+
+class TestProjectRoutes:
+    """Creating, opening and forgetting projects over HTTP."""
+
+    @pytest.fixture(autouse=True)
+    def isolated_home(self, tmp_path, monkeypatch):
+        import os
+        home = tmp_path / "home"
+        real = os.path.expanduser
+
+        def fake(path):
+            if path == "~" or path.startswith("~/"):
+                return str(home) + path[1:]
+            return real(path)
+
+        monkeypatch.setattr(os.path, "expanduser", fake)
+
+    @pytest.fixture(autouse=True)
+    def no_model(self, monkeypatch):
+        def refuse():
+            raise RuntimeError("no model")
+        monkeypatch.setattr("sdk.llm.get_provider", refuse)
+        monkeypatch.setattr("sdk.llm.available", lambda: False)
+
+    @pytest.fixture
+    def server(self, profile, dataset_dir):
+        import threading
+        server, _url = serve(profile, str(dataset_dir), session=None,
+                             port=0, open_browser=False)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        yield "http://127.0.0.1:{0}".format(server.server_address[1])
+        server.shutdown()
+        server.server_close()
+
+    def _post(self, url, payload):
+        request = urllib.request.Request(
+            url, data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"})
+        return json.load(urllib.request.urlopen(request, timeout=5))
+
+    def _post_error(self, url, payload):
+        request = urllib.request.Request(
+            url, data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"})
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(request, timeout=5)
+        return exc.value.code, json.load(exc.value)
+
+    def test_lists_no_projects_before_any_are_registered(self, server):
+        payload = json.load(urllib.request.urlopen(server + "/api/projects"))
+        assert payload["projects"] == []
+
+    def test_registers_a_project(self, server, dataset_dir):
+        out = self._post(server + "/api/projects/new",
+                         {"name": "Diabetes cohort", "path": str(dataset_dir),
+                          "description": "Risk factors"})
+        assert out["project"]["name"] == "Diabetes cohort"
+        assert out["ready"] is True
+        listed = json.load(urllib.request.urlopen(server + "/api/projects"))
+        assert listed["projects"][0]["description"] == "Risk factors"
+        assert listed["projects"][0]["open"] is True
+
+    def test_refuses_a_path_that_is_not_a_directory(self, server, tmp_path):
+        code, body = self._post_error(
+            server + "/api/projects/new",
+            {"name": "Ghost", "path": str(tmp_path / "nowhere")})
+        assert code == 400
+        assert "not a directory" in body["error"]
+
+    def test_refuses_a_duplicate_directory(self, server, dataset_dir):
+        self._post(server + "/api/projects/new",
+                   {"name": "First", "path": str(dataset_dir)})
+        code, body = self._post_error(
+            server + "/api/projects/new",
+            {"name": "Second", "path": str(dataset_dir)})
+        assert code == 400
+        assert "already registered" in body["error"]
+
+    def test_opens_a_registered_project(self, server, dataset_dir):
+        self._post(server + "/api/projects/new",
+                   {"name": "Cohort", "path": str(dataset_dir)})
+        out = self._post(server + "/api/projects/open", {"id": "cohort"})
+        assert out["project"]["id"] == "cohort"
+        assert out["ready"] is True
+
+    def test_opening_an_unknown_project_404s(self, server):
+        code, _body = self._post_error(server + "/api/projects/open",
+                                       {"id": "ghost"})
+        assert code == 404
+
+    def test_forgets_a_project_without_touching_the_files(self, server,
+                                                          dataset_dir):
+        import os
+        self._post(server + "/api/projects/new",
+                   {"name": "Cohort", "path": str(dataset_dir)})
+        assert self._post(server + "/api/projects/forget",
+                          {"id": "cohort"})["forgotten"] is True
+        assert os.path.isdir(str(dataset_dir))
+        listed = json.load(urllib.request.urlopen(server + "/api/projects"))
+        assert listed["projects"] == []
+
+    def test_forgetting_an_unknown_project_404s(self, server):
+        code, _body = self._post_error(server + "/api/projects/forget",
+                                       {"id": "ghost"})
+        assert code == 404
+
+
+class TestCardRoutes:
+    """The suggested analyses, and handing one to a session."""
+
+    @pytest.fixture(autouse=True)
+    def isolated_home(self, tmp_path, monkeypatch):
+        import os
+        home = tmp_path / "home"
+        real = os.path.expanduser
+
+        def fake(path):
+            if path == "~" or path.startswith("~/"):
+                return str(home) + path[1:]
+            return real(path)
+
+        monkeypatch.setattr(os.path, "expanduser", fake)
+
+    @pytest.fixture(autouse=True)
+    def no_model(self, monkeypatch):
+        def refuse():
+            raise RuntimeError("no model")
+        monkeypatch.setattr("sdk.llm.get_provider", refuse)
+        monkeypatch.setattr("sdk.llm.available", lambda: False)
+
+    @pytest.fixture
+    def server(self, profile, dataset_dir):
+        import threading
+        server, _url = serve(profile, str(dataset_dir), session=None,
+                             port=0, open_browser=False)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        yield "http://127.0.0.1:{0}".format(server.server_address[1])
+        server.shutdown()
+        server.server_close()
+
+    def _post(self, url, payload):
+        request = urllib.request.Request(
+            url, data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"})
+        return json.load(urllib.request.urlopen(request, timeout=5))
+
+    def test_serves_cards_for_the_open_project(self, server):
+        payload = json.load(urllib.request.urlopen(server + "/api/cards"))
+        assert payload["ready"] is True
+        assert payload["cards"]
+        for card in payload["cards"]:
+            assert card["title"] and card["question"] and card["analysis"]
+
+    def test_says_when_no_model_proposed_them(self, server):
+        payload = json.load(urllib.request.urlopen(server + "/api/cards"))
+        assert payload["suggested"] is False
+
+    def test_never_offers_a_blocked_analysis(self, server, profile):
+        from sdk import catalogue
+        feasible = set(m.key for m in catalogue.evaluate(profile) if m.feasible)
+        payload = json.load(urllib.request.urlopen(server + "/api/cards"))
+        assert all(c["analysis"] in feasible for c in payload["cards"])
+
+    def test_a_card_hands_off_to_a_session(self, server):
+        out = self._post(server + "/api/handoff", {"index": 0})
+        assert out["url"].startswith("/chat?seed=")
+        assert out["title"]
+
+    def test_the_seed_can_be_claimed_once(self, server):
+        from sdk import workspace
+        out = self._post(server + "/api/handoff", {"index": 0})
+        token = out["token"]
+        assert workspace.take_seed(token) is not None
+        assert workspace.take_seed(token) is None
+
+    def test_an_out_of_range_card_is_refused(self, server):
+        request = urllib.request.Request(
+            server + "/api/handoff", data=json.dumps({"index": 99}).encode(),
+            headers={"Content-Type": "application/json"})
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(request, timeout=5)
+        assert exc.value.code == 400
+
+    def test_a_typed_question_opens_a_session(self, server):
+        from sdk import workspace
+        out = self._post(server + "/api/ask",
+                         {"question": "What is the age distribution?"})
+        seed = workspace.take_seed(out["token"])
+        assert seed.question == "What is the age distribution?"
+        assert seed.analysis == ""
+
+    def test_an_empty_question_is_refused(self, server):
+        request = urllib.request.Request(
+            server + "/api/ask", data=json.dumps({"question": "  "}).encode(),
+            headers={"Content-Type": "application/json"})
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(request, timeout=5)
+        assert exc.value.code == 400
+
+
+class TestProjectsPage:
+    """The screen in front of the workspace: pick a cohort, ask it something."""
+
+    def test_the_script_parses(self):
+        from sdk.projects_page import PAGE as PROJECTS_PAGE
+        node = shutil.which("node")
+        if node is None:
+            pytest.skip("node not available")
+        script = re.search(r"<script>(.*?)</script>", PROJECTS_PAGE, re.S).group(1)
+        proc = subprocess.run([node, "--check", "-"], input=script.encode(),
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        assert proc.returncode == 0, proc.stderr.decode()
+
+    def test_no_external_asset_beyond_fonts(self):
+        """A TRE workspace may have no outbound access; fonts fall back."""
+        from sdk.projects_page import PAGE as PROJECTS_PAGE
+        head = PROJECTS_PAGE.split("<script>")[0]
+        assert "<script src=" not in head
+        external = [l for l in head.splitlines()
+                    if 'href="http' in l and "fonts.google" not in l
+                    and "fonts.gstatic" not in l]
+        assert external == [], external
+        assert "system-ui" in PROJECTS_PAGE
+
+    def test_every_endpoint_it_calls_is_routed(self):
+        import inspect
+
+        import sdk.ui as ui
+        from sdk.projects_page import PAGE as PROJECTS_PAGE
+        called = set(re.findall(r'"(/api/[a-z/]+)"', PROJECTS_PAGE))
+        routed = inspect.getsource(ui.make_handler) + inspect.getsource(
+            ui.project_route)
+        missing = sorted(p for p in called if '"{0}"'.format(p) not in routed)
+        assert not missing, missing
+        assert {"/api/projects", "/api/cards", "/api/handoff",
+                "/api/ask"} <= called
+
+    def test_is_served(self, profile, dataset_dir):
+        import threading
+        server, _url = serve(profile, str(dataset_dir), session=None,
+                             port=0, open_browser=False)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            base = "http://127.0.0.1:{0}".format(server.server_address[1])
+            body = urllib.request.urlopen(base + "/projects").read().decode()
+            assert "<title>Epsilon projects</title>" in body
+        finally:
+            server.shutdown()
+            server.server_close()

@@ -20,6 +20,7 @@ import chainlit as cl
 
 from sdk import catalogue as catalogue_mod
 from sdk import profile as profile_mod
+from sdk import workspace as workspace_mod
 from sdk.agent import Session
 from sdk.profile import Profile
 
@@ -28,11 +29,25 @@ from sdk.profile import Profile
 PROJECT_DIR = os.environ.get("EPSILON_PROJECT_DIR", ".")
 
 
-def _load() -> Optional[Profile]:
+def _load(directory: Optional[str] = None) -> Optional[Profile]:
     try:
-        return profile_mod.profile_project(PROJECT_DIR)
+        return profile_mod.profile_project(directory or PROJECT_DIR)
     except profile_mod.ProfileError:
         return None
+
+
+def _seed_token() -> str:
+    """The token in the URL that opened this session, if it survived.
+
+    Chainlit talks over a socket, so the page URL reaches us only as the
+    referrer of the handshake. Browsers may trim it; `take_seed` falls back to
+    the most recent unclaimed card when it does.
+    """
+    try:
+        environ = cl.context.session.environ or {}
+    except Exception:
+        return ""
+    return workspace_mod.token_from_referrer(environ.get("HTTP_REFERER") or "")
 
 
 def _greeting(profile: Profile) -> str:
@@ -75,7 +90,16 @@ async def starters():
 
 @cl.on_chat_start
 async def start():
-    profile = _load()
+    # A session opened from a card carries the card's context; one opened
+    # directly is about whichever project `epsilon start` was pointed at.
+    seed = None
+    try:
+        seed = workspace_mod.take_seed(_seed_token())
+    except Exception:
+        seed = None
+
+    directory = seed.project_dir if seed else PROJECT_DIR
+    profile = _load(directory)
     if profile is None:
         await cl.Message(content=(
             "**No project here.** The assistant only answers about a dataset "
@@ -93,10 +117,19 @@ async def start():
             "one.".format(exc))).send()
         return
 
-    session = Session.create(provider, profile, project_dir=PROJECT_DIR)
+    session = Session.create(provider, profile, project_dir=directory)
     cl.user_session.set("session", session)
     cl.user_session.set("profile", profile)
-    await cl.Message(content=_greeting(profile)).send()
+
+    if seed is None:
+        await cl.Message(content=_greeting(profile)).send()
+        return
+
+    # The card said what this session is about, so say it once and get on
+    # with the work rather than making the researcher retype it.
+    await cl.Message(content="### {0}\n\n{1}".format(
+        seed.title, seed.question)).send()
+    await _respond(session, seed.brief())
 
 
 @cl.on_message
@@ -106,7 +139,11 @@ async def on_message(message: cl.Message):
         await cl.Message(content=(
             "The assistant is not available — see the message above.")).send()
         return
+    await _respond(session, message.content)
 
+
+async def _respond(session: Session, text: str) -> None:
+    """Put one question to the assistant and draw everything it produces."""
     # Session.ask is synchronous and blocking, so it runs off the event loop
     # while tool calls are pushed back as they happen.
     loop = asyncio.get_running_loop()
@@ -116,7 +153,7 @@ async def on_message(message: cl.Message):
         loop.call_soon_threadsafe(queue.put_nowait, step)
 
     task = loop.run_in_executor(
-        None, lambda: session.ask(message.content, on_step=on_step))
+        None, lambda: session.ask(text, on_step=on_step))
 
     async def drain():
         while True:

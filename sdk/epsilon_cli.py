@@ -922,28 +922,55 @@ def start(
     except Exception as exc:
         typer.secho("Chat disabled: {0}".format(exc), fg=typer.colors.YELLOW)
 
+    from sdk import app as app_mod
+    from sdk.workspace import Workspace
+    space = Workspace(".", profile, session)
+
+    # With the chat extra the workspace and the assistant share one origin, so
+    # a suggested analysis can open a session that already knows the project.
+    if app_mod.available():
+        try:
+            server, url = app_mod.serve(space, port,
+                                        open_browser=not no_browser)
+        except OSError as exc:
+            typer.secho("Could not start on port {0}: {1}".format(port, exc),
+                        fg=typer.colors.RED)
+            typer.echo("Try 'epsilon start --port 8788'.")
+            raise typer.Exit(1)
+        _announce(url, profile, chat="assistant at {0}chat".format(url))
+        try:
+            server.run()
+        except KeyboardInterrupt:
+            typer.echo("")
+        return
+
     try:
         server, url = ui_mod.serve(profile, ".", session, port,
                                    open_browser=not no_browser)
     except OSError as exc:
         typer.secho("Could not start on port {0}: {1}".format(port, exc),
                     fg=typer.colors.RED)
-        typer.echo("Try 'epsilon ui --port 8788'.")
+        typer.echo("Try 'epsilon start --port 8788'.")
         raise typer.Exit(1)
 
-    typer.secho("epsilon workspace", bold=True)
-    typer.echo("  {0}".format(url))
-    typer.secho("  {0} | {1}".format(
-        profile.title if profile else "no project yet",
-        "assistant ready" if session else "assistant needs 'epsilon ai login'"),
-        fg=typer.colors.BRIGHT_BLACK)
-    typer.secho("  Ctrl-C to stop", fg=typer.colors.BRIGHT_BLACK)
+    _announce(url, profile,
+              chat=("assistant ready" if session
+                    else "assistant needs 'epsilon ai login'"))
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         typer.echo("")
     finally:
         server.server_close()
+
+
+def _announce(url, profile, chat: str) -> None:
+    typer.secho("epsilon workspace", bold=True)
+    typer.echo("  {0}".format(url))
+    typer.secho("  {0} | {1}".format(
+        profile.title if profile else "no project yet", chat),
+        fg=typer.colors.BRIGHT_BLACK)
+    typer.secho("  Ctrl-C to stop", fg=typer.colors.BRIGHT_BLACK)
 
 
 @app.command()

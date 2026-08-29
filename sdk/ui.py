@@ -170,6 +170,87 @@ def status_payload(profile: Optional[Profile], project_dir: str) -> Dict[str, An
     }
 
 
+def projects_payload(space) -> Dict[str, Any]:
+    """Every project this researcher has registered, recent first."""
+    from sdk import projects as registry
+
+    open_id = space.project.id if space.project else None
+    out = []
+    for project in registry.recent():
+        out.append({
+            "id": project.id, "name": project.name,
+            "description": project.description, "path": project.path,
+            "exists": project.exists, "initialised": project.initialised,
+            "opened": project.opened, "open": project.id == open_id,
+        })
+    return {"projects": out, "openId": open_id,
+            "openPath": space.project_dir, "registered": space.project is not None}
+
+
+def cards_payload(space, refresh: bool = False) -> Dict[str, Any]:
+    """The analyses worth running here, as the page draws them."""
+    if not space.ready:
+        return {"cards": [], "ready": False, "suggested": False}
+
+    from sdk import llm
+    cards = space.cards(refresh=refresh)
+    return {
+        "ready": True,
+        # Whether a model proposed these or the catalogue alone did. The page
+        # says which, so a researcher is never told a machine suggested
+        # something it did not.
+        "suggested": llm.available(),
+        "cards": [{
+            "index": i, "title": c.title, "question": c.question,
+            "why": c.why, "analysis": c.analysis, "fields": c.fields,
+            "warnings": c.warnings,
+        } for i, c in enumerate(cards)],
+    }
+
+
+def project_route(space, path, body):
+    """The project screens, shared by both servers.
+
+    Returns (payload, status). Every decision about what a project is lives
+    here, so the stdlib server and the mounted app cannot drift apart.
+    """
+    from sdk import projects as registry
+
+    if path == "/api/projects/new":
+        try:
+            project = registry.add(
+                body.get("name", ""), body.get("path", ""),
+                body.get("description", ""))
+        except registry.ProjectError as exc:
+            return {"error": str(exc)}, 400
+        space.open(project.id)
+        return {"project": project.to_json(),
+                "ready": space.ready}, 200
+
+    if path == "/api/projects/open":
+        project = space.open(body.get("id", ""))
+        if project is None:
+            return {"error": "No such project."}, 404
+        return {"project": project.to_json(),
+                "ready": space.ready}, 200
+
+    if path == "/api/projects/forget":
+        if not registry.remove(body.get("id", "")):
+            return {"error": "No such project."}, 404
+        return {"forgotten": True}, 200
+
+    # A card, or a typed question, becomes a session.
+    if path == "/api/handoff":
+        seed = space.hand_off(int(body.get("index", -1)))
+    else:
+        question = (body.get("question") or "").strip()
+        seed = space.ask_seed(question) if question else None
+    if seed is None:
+        return {"error": "Nothing to open."}, 400
+    return {"token": seed.token, "title": seed.title,
+            "url": "/chat?seed=" + seed.token}, 200
+
+
 def run_module(project_dir: str, module: str) -> Dict[str, Any]:
     """Run one analysis locally, the way `epsilon run` would."""
     import subprocess
@@ -220,8 +301,12 @@ def generate(profile: Profile, project_dir: str, key: str) -> Dict[str, Any]:
             "warnings": match.warnings}
 
 
-def make_handler(profile: Optional[Profile], project_dir: str, session):
-    """Build a request handler bound to one project."""
+def make_handler(space):
+    """Build a request handler over a workspace.
+
+    Every route reads the workspace at request time rather than closing over a
+    project, so opening another cohort does not need a restart.
+    """
 
     class Handler(BaseHTTPRequestHandler):
         # Silence the default stderr access log; the CLI prints its own line.
@@ -242,42 +327,69 @@ def make_handler(profile: Optional[Profile], project_dir: str, session):
                        "application/json; charset=utf-8")
 
         def do_GET(self):
-            if self.path in ("/", "/index.html"):
+            path, _, query = self.path.partition("?")
+            if path in ("/", "/index.html"):
                 self._send(200, PAGE.encode("utf-8"), "text/html; charset=utf-8")
-            elif self.path == "/api/dataset":
-                self._json(dataset_payload(profile) if profile
+            elif path in ("/projects", "/projects/"):
+                from sdk.projects_page import PAGE as PROJECTS_PAGE
+                self._send(200, PROJECTS_PAGE.encode("utf-8"),
+                           "text/html; charset=utf-8")
+            elif path == "/api/dataset":
+                self._json(dataset_payload(space.profile) if space.ready
                            else {"ready": False})
-            elif self.path == "/api/analyses":
-                self._json(analyses_payload(profile) if profile
+            elif path == "/api/analyses":
+                self._json(analyses_payload(space.profile) if space.ready
                            else {"analyses": []})
-            elif self.path == "/api/checks":
-                self._json(checks_payload(project_dir) if profile
+            elif path == "/api/checks":
+                self._json(checks_payload(space.project_dir) if space.ready
                            else {"summary": "", "findings": []})
-            elif self.path == "/api/status":
-                self._json(status_payload(profile, project_dir))
-            elif self.path == "/api/session":
-                self._json({"chat": session is not None})
+            elif path == "/api/status":
+                self._json(status_payload(space.profile, space.project_dir))
+            elif path == "/api/session":
+                self._json({"chat": space.session is not None})
+            elif path == "/api/projects":
+                self._json(projects_payload(space))
+            elif path == "/api/cards":
+                # Suggesting costs a model call, so it is asked for, not
+                # implied by loading the page.
+                self._json(cards_payload(space, refresh="refresh=1" in query))
             else:
                 self._json({"error": "not found"}, 404)
 
+        def _body(self):
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+                return json.loads(self.rfile.read(length))
+            except (ValueError, TypeError):
+                return None
+
         def do_POST(self):
             if self.path in ("/api/run", "/api/generate"):
-                try:
-                    length = int(self.headers.get("Content-Length") or 0)
-                    body = json.loads(self.rfile.read(length))
-                except (ValueError, TypeError):
+                body = self._body()
+                if body is None:
                     self._json({"error": "bad request"}, 400)
                     return
                 if self.path == "/api/run":
-                    self._json(run_module(project_dir, body.get("module", "")))
+                    self._json(run_module(space.project_dir,
+                                          body.get("module", "")))
                 else:
-                    self._json(generate(profile, project_dir,
+                    self._json(generate(space.profile, space.project_dir,
                                         body.get("analysis", "")))
                 return
+
+            if self.path in ("/api/projects/new", "/api/projects/open",
+                             "/api/projects/forget", "/api/ask", "/api/handoff"):
+                body = self._body()
+                if body is None:
+                    self._json({"error": "bad request"}, 400)
+                    return
+                self._json(*project_route(space, self.path, body))
+                return
+
             if self.path != "/api/chat":
                 self._json({"error": "not found"}, 404)
                 return
-            if session is None:
+            if space.session is None:
                 self._json({"error": "No model is configured. Run "
                                      "'epsilon ai login', or use the panels "
                                      "above -- they need no model."}, 400)
@@ -291,13 +403,14 @@ def make_handler(profile: Optional[Profile], project_dir: str, session):
 
             steps = []
             try:
-                reply = session.ask(message,
+                reply = space.session.ask(message,
                                     on_step=lambda s: steps.append(
                                         {"kind": s.kind, "label": s.label}))
             except Exception as exc:
                 self._json({"error": "{0}: {1}".format(type(exc).__name__, exc)}, 500)
                 return
-            charts = list(session.box.charts) if session.box else []
+            charts = (list(space.session.box.charts)
+                      if space.session.box else [])
             self._json({"reply": reply, "steps": steps, "charts": charts})
 
     return Handler
@@ -306,7 +419,9 @@ def make_handler(profile: Optional[Profile], project_dir: str, session):
 def serve(profile: Optional[Profile], project_dir: str = ".", session=None,
           port: int = DEFAULT_PORT, open_browser: bool = True):
     """Serve the interface on loopback until interrupted."""
-    handler = make_handler(profile, project_dir, session)
+    from sdk.workspace import Workspace
+    space = Workspace(project_dir, profile, session)
+    handler = make_handler(space)
     server = ThreadingHTTPServer(("127.0.0.1", port), handler)
     url = "http://127.0.0.1:{0}/".format(port)
     if open_browser:
