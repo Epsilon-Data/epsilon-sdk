@@ -348,9 +348,24 @@ def make_handler(space):
                 self._send(200, PROJECTS_PAGE.encode("utf-8"),
                            "text/html; charset=utf-8")
             elif path in ("/workspace", "/workspace/"):
-                # The workspace describes the open project -- its set-up, its
-                # dataset and its assistant. With none open there is nothing
-                # for it to describe.
+                # The workspace describes one project, so the URL says which:
+                # /workspace?p=<id>. Without the parameter it shows whatever
+                # is already open, and with nothing open it has nothing to
+                # describe.
+                wanted = ""
+                for part in query.split("&"):
+                    if part.startswith("p="):
+                        wanted = part[2:]
+                if wanted and (space.project is None
+                               or space.project.id != wanted):
+                    space.open(wanted)
+                if not wanted and space.project is not None:
+                    self.send_response(302)
+                    self.send_header("Location",
+                                     "/workspace?p=" + space.project.id)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
                 if not space.ready:
                     self.send_response(302)
                     self.send_header("Location", "/")
@@ -378,6 +393,24 @@ def make_handler(space):
                 # implied by loading the page.
                 self._json(cards_payload(space, refresh="refresh=1" in query,
                                          fast="fast=1" in query))
+            elif path == "/chat" or path.startswith("/chat/"):
+                # This server runs when the chat extra is not installed, so
+                # say that, rather than handing a researcher raw JSON.
+                page = (
+                    "<!doctype html><meta charset='utf-8'>"
+                    "<title>Epsilon chat</title>"
+                    "<body style=\"font-family:system-ui;background:#f4f2ee;"
+                    "color:#1c1b19;display:grid;place-items:center;"
+                    "height:100vh;margin:0\"><div style=\"max-width:34rem;"
+                    "padding:2rem\"><h1 style=\"font-size:1.3rem\">The chat "
+                    "is not installed here</h1><p>Sessions need the chat "
+                    "extra:</p><pre style=\"background:#efece6;padding:0.8rem "
+                    "1rem;border-radius:8px\">pip install 'epsilon-sdk"
+                    "[copilot,chat]'</pre><p>Then run <code>epsilon start"
+                    "</code> again. <a href=\"/\">Back to projects</a>.</p>"
+                    "</div></body>")
+                self._send(200, page.encode("utf-8"),
+                           "text/html; charset=utf-8")
             else:
                 self._json({"error": "not found"}, 404)
 

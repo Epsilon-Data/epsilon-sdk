@@ -12,8 +12,6 @@ navigating to /chat and the token in the URL survives the trip.
 Without the extra there is no app to build; `epsilon start` serves the
 workspace alone, and says so.
 """
-from __future__ import annotations
-
 import json
 import os
 from typing import Any, Dict, Optional
@@ -57,7 +55,13 @@ def build(space: Workspace):
         return HTMLResponse(PROJECTS_PAGE)
 
     @app.get("/workspace", response_class=HTMLResponse)
-    async def workspace_page():
+    async def workspace_page(p: str = ""):
+        # Only the project list is global; the workspace is always some
+        # project's workspace, and the URL says whose.
+        if p and (space.project is None or space.project.id != p):
+            space.open(p)
+        if not p and space.project is not None:
+            return RedirectResponse("/workspace?p=" + space.project.id)
         if not space.ready:
             return RedirectResponse("/")
         return HTMLResponse(ui_mod.PAGE)

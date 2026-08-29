@@ -694,9 +694,48 @@ class TestEntryPoint:
             server.shutdown()
             server.server_close()
 
-    def test_the_project_detail_offers_the_workspace(self):
+    def test_the_project_detail_offers_the_workspace_by_id(self):
+        """The workspace URL says which project it describes."""
         from sdk.projects_page import PAGE as PROJECTS_PAGE
-        assert 'href="/workspace"' in PROJECTS_PAGE
+        assert 'href="/workspace?p=' in PROJECTS_PAGE
+
+    def test_the_workspace_url_opens_the_named_project(self, dataset_dir,
+                                                       tmp_path):
+        """Two projects, one server: ?p= decides which one you are in."""
+        import shutil
+
+        from sdk import projects as registry
+        second = tmp_path / "second"
+        shutil.copytree(str(dataset_dir), str(second))
+        registry.add("First", str(dataset_dir))
+        registry.add("Second", str(second))
+
+        server, base = self._serve(None, tmp_path)
+        try:
+            urllib.request.urlopen(base + "/workspace?p=second").read()
+            listed = json.load(
+                urllib.request.urlopen(base + "/api/projects"))
+            assert listed["openId"] == "second"
+            urllib.request.urlopen(base + "/workspace?p=first").read()
+            listed = json.load(
+                urllib.request.urlopen(base + "/api/projects"))
+            assert listed["openId"] == "first"
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_chat_without_the_extra_explains_itself(self, profile,
+                                                    dataset_dir):
+        """A dead click must say what to install, not return raw JSON."""
+        server, base = self._serve(profile, dataset_dir)
+        try:
+            body = urllib.request.urlopen(
+                base + "/chat?seed=x").read().decode()
+            assert "epsilon-sdk" in body
+            assert "not installed" in body
+        finally:
+            server.shutdown()
+            server.server_close()
 
     def test_each_project_has_a_real_url(self):
         """Detail is a page, not a view swap: back and reload behave."""

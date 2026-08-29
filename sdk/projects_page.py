@@ -362,7 +362,8 @@ function detailHtml(p) {
       '<h2>Project</h2>' +
       '<div class="actions">' +
         (p.initialised
-          ? '<a class="primary" href="/workspace">Open the workspace</a>'
+          ? '<a class="primary" href="/workspace?p=' + esc(p.id) +
+            '">Open the workspace</a>'
           : '') +
         '<button class="ghost" id="forget">Forget this project</button>' +
       '</div>' +
