@@ -664,7 +664,7 @@ app.add_typer(ai_app, name="ai")
 
 
 def _profile_project_or_exit():
-    """Load the project card, failing with an actionable message."""
+    """Measure the project's dataset, failing with an actionable message."""
     try:
         return profile_mod.profile_project(".")
     except profile_mod.ProfileError as exc:
@@ -680,14 +680,14 @@ def explain(
     """
     Explain what this dataset holds and what can be computed from it.
 
-    Reads the dataset card. Needs no API key and makes no network call, and
+    Measured from the local dataset. Needs no API key and makes no network call, and
     the feasibility verdicts are the same ones 'epsilon chat' works from.
     """
-    card = _profile_project_or_exit()
+    profile = _profile_project_or_exit()
     if brief:
-        typer.echo(explain_mod.render(card))
+        typer.echo(explain_mod.render(profile))
     else:
-        typer.echo(explain_mod.render_full(card))
+        typer.echo(explain_mod.render_full(profile))
 
 
 @app.command()
@@ -705,13 +705,13 @@ def snippet(
     """
     Generate starter analysis code for one catalogue entry.
 
-    The skeleton is a fixed template parameterised from the card, so
+    The skeleton is a fixed template parameterised from what was measured, so
     suppression and the unit of analysis are structural rather than advisory.
 
     Fields are chosen automatically; --set overrides one. Overrides are
-    validated against the card and cannot make a blocked analysis available.
+    validated against the measurement and cannot make a blocked analysis available.
     """
-    card = _profile_project_or_exit()
+    profile = _profile_project_or_exit()
     if analysis not in catalogue_mod.SPECS_BY_KEY:
         typer.secho("Unknown analysis '{0}'.".format(analysis), fg=typer.colors.RED)
         typer.echo("Available: " + ", ".join(sorted(catalogue_mod.SPECS_BY_KEY)))
@@ -726,10 +726,10 @@ def snippet(
         name, _, path = item.partition("=")
         choices[name.strip()] = path.strip()
 
-    match = catalogue_mod.SPECS_BY_KEY[analysis].evaluate(card)
+    match = catalogue_mod.SPECS_BY_KEY[analysis].evaluate(profile)
     if choices:
         try:
-            match = catalogue_mod.override(card, match, choices)
+            match = catalogue_mod.override(profile, match, choices)
         except catalogue_mod.OverrideError as exc:
             typer.secho(str(exc), fg=typer.colors.RED)
             raise typer.Exit(1)
@@ -744,9 +744,9 @@ def snippet(
 
     try:
         if show:
-            typer.echo(snippets_mod.render(card, match, chart=chart))
+            typer.echo(snippets_mod.render(profile, match, chart=chart))
             return
-        path = snippets_mod.write(card, match, project_dir=".",
+        path = snippets_mod.write(profile, match, project_dir=".",
                                   filename=output, chart=chart)
     except snippets_mod.SnippetError as exc:
         typer.secho(str(exc), fg=typer.colors.RED)
@@ -902,11 +902,11 @@ def chat(
     """
     Work with the copilot on your analysis.
 
-    The model drives: it reads the dataset card, checks what is computable,
+    The model drives: it reads the measured dataset, checks what is computable,
     writes and runs code, and iterates. It cannot overrule a feasibility
     verdict or read a record -- those come from tools, not from the model.
     """
-    card = _profile_project_or_exit()
+    profile = _profile_project_or_exit()
 
     try:
         from sdk import llm
@@ -920,7 +920,7 @@ def chat(
         raise typer.Exit(1)
 
     session = agent_mod.Session.create(
-        provider, card, project_dir=".", record=not no_record)
+        provider, profile, project_dir=".", record=not no_record)
 
     def on_step(step):
         if quiet:
@@ -950,7 +950,7 @@ def chat(
     typer.secho("  {0} | {1} | tier {2}".format(cfg.provider, cfg.model, cfg.tier),
                 fg=typer.colors.BRIGHT_BLACK)
     typer.secho("  {0} | synthetic data only | Ctrl-D to exit".format(
-        card.title), fg=typer.colors.BRIGHT_BLACK)
+        profile.title), fg=typer.colors.BRIGHT_BLACK)
     if session.transcript_path:
         typer.secho("  transcript: {0}".format(session.transcript_path),
                     fg=typer.colors.BRIGHT_BLACK)

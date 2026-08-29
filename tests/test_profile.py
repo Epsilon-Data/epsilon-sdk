@@ -1,10 +1,10 @@
 """
 Tests for measuring a dataset.
 
-This replaces the owner-authored card. Everything a verdict rests on is now
-inferred here, so the inference has to be conservative: when a signal is
-ambiguous the profile should say less rather than guess, because a wrong fact
-produces a confidently wrong refusal or a confidently wrong permission.
+Every verdict rests on what is inferred here, so the inference has to be
+conservative: when a signal is ambiguous the profile should say less rather
+than guess, because a wrong fact produces a confidently wrong refusal or a
+confidently wrong permission.
 """
 import os
 

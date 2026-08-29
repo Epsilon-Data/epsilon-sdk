@@ -1,10 +1,11 @@
 """
 Describe a dataset by measuring it.
 
-Replaces the owner-authored dataset card. Everything here is derived at
-`epsilon init` time from two things the SDK already has: the archetype, and
-the projected CSV whose headers are guaranteed to be the archetype's leaf
-paths. No new artifact, nothing for a data owner to write, nothing to drift.
+Everything here is derived at `epsilon init` time from two things the SDK
+already has: the archetype, and the projected CSV whose headers are guaranteed
+to be the archetype's leaf paths. There is no separate metadata artifact --
+nothing for a data owner to author, and nothing that can drift from the data
+it describes.
 
 What is inferred is inferred conservatively -- when a signal is ambiguous the
 profile says less rather than guessing, because every downstream refusal is

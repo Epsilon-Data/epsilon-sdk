@@ -232,10 +232,6 @@ def _pick(leaves: List[Leaf], exclude: Optional[List[str]] = None) -> Optional[L
 def _describe_missing(profile: Profile, want: str) -> str:
     """Explain a missing requirement -- and do not blame the archetype for it.
 
-    When no profile is published the field types are unknown, so nothing matches
-    a typed requirement. Reporting that as "this archetype grants no
-    categorical field" sends the researcher to argue with their data owner
-    about the wrong thing.
     """
     return "This archetype grants no {0}. Fields available: {1}.".format(
         want, ", ".join(sorted(profile.leaves)) or "none")
@@ -400,8 +396,8 @@ def _eval_logistic(profile: Profile) -> Match:
             warnings.append(
                 "At {0} events per variable you have room for about {1:.0f} "
                 "covariates.".format(MIN_EVENTS_PER_VARIABLE, capacity))
-    warnings.append("Check events-per-variable on your own cohort: the profile "
-                    "reports row counts, not outcome counts.")
+    warnings.append("Check events-per-variable on your own cohort: only row "
+                    "counts were measured, not outcome counts.")
     return Match(
         key="logistic",
         title="Logistic regression",
@@ -464,7 +460,7 @@ def _eval_trend(profile: Profile) -> Match:
     warnings = _leaf_warnings(profile, [temporal.path] if temporal else [])
     if temporal is not None and not temporal.is_detailed and not temporal.releasable_as:
         blockers.append(
-            "{0} is {1} and the profile names no releasable buckets, so no "
+            "{0} is {1} and no releasable bucket is known for it, so no "
             "time axis can be released.".format(temporal.path, temporal.access_level))
     if temporal is not None:
         # Whether dates are shifted per entity cannot be measured from the

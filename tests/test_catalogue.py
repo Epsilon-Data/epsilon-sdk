@@ -99,7 +99,7 @@ class TestTrend:
         profile.leaf("admissions.time").releasable_as = []
         match = verdict(profile, "trend")
         assert match.status == BLOCKED
-        assert any("no releasable buckets" in b for b in match.blockers)
+        assert any("no releasable bucket is known" in b for b in match.blockers)
 
 
 class TestCrossTab:

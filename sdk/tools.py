@@ -9,8 +9,8 @@ becomes an attested result.
 
 Two limits are enforced here rather than asked for in a prompt:
 
-* No tool ever returns a record. `profile_field` returns aggregates, and only
-  when the data owner set allowAiProfiling on the profile.
+* No tool ever returns a record. `profile_field` returns aggregates over the
+  local synthetic projection, with rare levels withheld.
 * No tool reaches outside the project directory, and none writes to
   generated/, which the SDK owns.
 """
@@ -259,15 +259,11 @@ class Toolbox(object):
     def profile_field(self, field: str) -> str:
         """Aggregate statistics for one field of the local synthetic CSV.
 
-        Never returns rows. Gated on the owner's allowAiProfiling flag: some
-        owners will not have synthetic values leave the machine even in
-        summary, and that is their call to make, not the agent's.
+        Never returns rows, and levels below the suppression threshold are
+        withheld -- so this cannot become a way to read rare values out one at
+        a time. What it summarises is the synthetic projection sitting on this
+        machine, never a record from the real dataset.
         """
-        if False:
-            raise ToolError(
-                "The data owner has not enabled AI profiling for this dataset, "
-                "so the local data cannot be summarised into this conversation. "
-                "Use read_dataset for the statistics the owner published.")
         leaf = self.profile.leaf(field)
         if leaf is None:
             raise ToolError("'{0}' is not a field. Available: {1}".format(
