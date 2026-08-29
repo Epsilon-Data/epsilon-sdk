@@ -168,10 +168,46 @@ def build(space: Workspace):
     return app
 
 
+def _materialise_elements() -> None:
+    """Put the chat's custom elements where Chainlit will look for them.
+
+    Chainlit resolves `public/elements/<Name>.jsx` from the directory the
+    server runs in -- the researcher's project -- while the elements ship
+    inside this package. Copy them over at start-up, so a chart renders
+    instead of "File not found".
+    """
+    import shutil
+
+    source = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "elements")
+    if not os.path.isdir(source):
+        return
+    target = os.path.join(os.getcwd(), "public", "elements")
+    os.makedirs(target, exist_ok=True)
+    for name in os.listdir(source):
+        if not name.endswith(".jsx"):
+            continue
+        src_path = os.path.join(source, name)
+        dst_path = os.path.join(target, name)
+        try:
+            with open(src_path, "rb") as fh:
+                wanted = fh.read()
+            current = b""
+            if os.path.exists(dst_path):
+                with open(dst_path, "rb") as fh:
+                    current = fh.read()
+            if current != wanted:
+                shutil.copyfile(src_path, dst_path)
+        except OSError:
+            # A read-only project directory loses the chart, not the chat.
+            pass
+
+
 def mount(app, project_dir: str):
     """Attach the Chainlit chat at /chat."""
     from chainlit.utils import mount_chainlit
 
+    _materialise_elements()
     target = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           "chat_app.py")
     # The chat measures whichever project the workspace has open unless a card

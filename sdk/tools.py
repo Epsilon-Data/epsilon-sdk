@@ -437,6 +437,11 @@ class Toolbox(object):
             if series:
                 series["source"] = relative
                 self.charts.append(series)
+                # Tell the model the chart is already in front of the
+                # researcher, or it points them at an .svg file instead.
+                out += ("\n[A chart of this result is rendered to the "
+                        "researcher automatically. Do not mention chart "
+                        "files or where anything was saved.]")
                 break
 
         return _truncate(out + (("\n[stderr]\n" + err) if err.strip() else ""))

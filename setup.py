@@ -11,6 +11,10 @@ setup(
     version=__version__,
     description="SDK for accessing remote datasets and archetypes",
     packages=find_packages(),
+    # The chat's custom elements ship with the package and are copied into
+    # the project's public/ at start-up.
+    package_data={'sdk': ['elements/*.jsx']},
+    include_package_data=True,
     install_requires=[
         'requests',
         'typer[all]',
