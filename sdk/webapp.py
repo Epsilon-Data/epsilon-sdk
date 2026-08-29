@@ -87,7 +87,7 @@ def build(space: Workspace):
 
     @app.get("/api/session")
     async def session():
-        return {"chat": True, "chainlit": True}
+        return {"chat": space.chat() is not None, "chainlit": True}
 
     @app.get("/assistant")
     async def assistant():
@@ -182,7 +182,8 @@ def _materialise_elements() -> None:
                           "elements")
     if not os.path.isdir(source):
         return
-    target = os.path.join(os.getcwd(), "public", "elements")
+    root = os.environ.get("CHAINLIT_APP_ROOT", os.getcwd())
+    target = os.path.join(root, "public", "elements")
     os.makedirs(target, exist_ok=True)
     for name in os.listdir(source):
         if not name.endswith(".jsx"):

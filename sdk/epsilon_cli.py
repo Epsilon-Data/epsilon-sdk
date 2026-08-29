@@ -926,36 +926,24 @@ def start(
     from sdk.workspace import Workspace
     space = Workspace(".", profile, session, register=True)
 
-    # With the chat extra the workspace and the assistant share one origin, so
-    # a suggested analysis can open a session that already knows the project.
-    if app_mod.available():
-        try:
-            server, url = app_mod.serve(space, port,
-                                        open_browser=not no_browser)
-        except OSError:
-            _port_taken(port, no_browser)
-        _announce(url, profile, chat="assistant at {0}chat".format(url))
-        try:
-            server.run()
-        except KeyboardInterrupt:
-            typer.echo("")
-        return
+    # One server: the workspace and the assistant share one origin, so a
+    # suggested analysis can open a session that already knows the project.
+    if not app_mod.available():
+        typer.secho("epsilon start needs the chat extra:", fg=typer.colors.RED)
+        typer.echo("  pip install 'epsilon-sdk[copilot,chat]'")
+        typer.echo("The terminal commands (explain, snippet, check, run, "
+                   "build) work without it.")
+        raise typer.Exit(1)
 
     try:
-        server, url = ui_mod.serve(profile, ".", session, port,
-                                   open_browser=not no_browser, space=space)
+        server, url = app_mod.serve(space, port, open_browser=not no_browser)
     except OSError:
         _port_taken(port, no_browser)
-
-    _announce(url, profile,
-              chat=("assistant ready" if session
-                    else "assistant needs 'epsilon ai login'"))
+    _announce(url, profile, chat="assistant at {0}chat".format(url))
     try:
-        server.serve_forever()
+        server.run()
     except KeyboardInterrupt:
         typer.echo("")
-    finally:
-        server.server_close()
 
 
 def _port_taken(port: int, no_browser: bool):

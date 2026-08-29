@@ -1,6 +1,15 @@
 """
 Pytest configuration and fixtures
 """
+import os
+import tempfile
+
+# Chainlit resolves its config, files and public/ directory from
+# CHAINLIT_APP_ROOT at import time. Point it at a throwaway directory before
+# anything imports chainlit, so tests never write into the repository.
+os.environ.setdefault("CHAINLIT_APP_ROOT",
+                      tempfile.mkdtemp(prefix="epsilon-test-chainlit-"))
+
 import pytest
 from unittest.mock import Mock
 from datetime import datetime, timedelta
@@ -125,16 +134,21 @@ ARCHETYPE = {
 }
 
 
-@pytest.fixture
-def dataset_dir(tmp_path):
-    """An initialised project with a real CSV to measure."""
+def build_dataset(path):
+    """Materialise the fixture dataset into a directory."""
     import json
-    generated = tmp_path / "generated"
-    generated.mkdir()
+    generated = path / "generated"
+    generated.mkdir(parents=True)
     (generated / "data.csv").write_text(_rows(), encoding="utf-8")
     (generated / "archetype.json").write_text(json.dumps(ARCHETYPE),
                                               encoding="utf-8")
-    return tmp_path
+    return path
+
+
+@pytest.fixture
+def dataset_dir(tmp_path):
+    """An initialised project with a real CSV to measure."""
+    return build_dataset(tmp_path)
 
 
 @pytest.fixture

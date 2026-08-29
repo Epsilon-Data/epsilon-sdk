@@ -1,21 +1,15 @@
 """
-A local web interface for the copilot.
+The workspace page and the payloads behind every screen.
 
-Runs on the researcher's own machine, beside their project, for the same
-reason the CLI does: the model, the synthetic data and the project files stay
-where they already are. Nothing is served to anyone else -- the server binds to
-loopback only.
-
-Standard library only. A researcher should not need a node toolchain to see
-what their dataset supports.
+The single server lives in webapp.py; this module holds what it serves -- the
+design-canvas page, the JSON each screen reads, and the decisions shared by
+every route. Payloads are plain functions over a Workspace so they can be
+tested without a socket.
 """
 from __future__ import annotations
 
 import json
 import os
-import threading
-import webbrowser
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Optional
 
 from sdk import catalogue as catalogue_mod
@@ -311,182 +305,6 @@ def generate(profile: Profile, project_dir: str, key: str) -> Dict[str, Any]:
     return {"ok": True, "path": os.path.relpath(path, project_dir),
             "module": os.path.basename(path),
             "warnings": match.warnings}
-
-
-def make_handler(space):
-    """Build a request handler over a workspace.
-
-    Every route reads the workspace at request time rather than closing over a
-    project, so opening another cohort does not need a restart.
-    """
-
-    class Handler(BaseHTTPRequestHandler):
-        # Silence the default stderr access log; the CLI prints its own line.
-        def log_message(self, fmt, *args):
-            pass
-
-        def _send(self, code: int, body: bytes, content_type: str) -> None:
-            self.send_response(code)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Content-Length", str(len(body)))
-            # The page is served to one local browser; nothing else may call in.
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(body)
-
-        def _json(self, payload: Dict[str, Any], code: int = 200) -> None:
-            self._send(code, json.dumps(payload).encode("utf-8"),
-                       "application/json; charset=utf-8")
-
-        def do_GET(self):
-            path, _, query = self.path.partition("?")
-            # The front door is the list of projects: you choose what you are
-            # working on before anything describes it.
-            if (path in ("/", "/index.html", "/projects")
-                    or path.startswith("/projects/")):
-                from sdk.projects_page import PAGE as PROJECTS_PAGE
-                self._send(200, PROJECTS_PAGE.encode("utf-8"),
-                           "text/html; charset=utf-8")
-            elif path in ("/workspace", "/workspace/"):
-                # The workspace describes one project, so the URL says which:
-                # /workspace?p=<id>. Without the parameter it shows whatever
-                # is already open, and with nothing open it has nothing to
-                # describe.
-                wanted = ""
-                for part in query.split("&"):
-                    if part.startswith("p="):
-                        wanted = part[2:]
-                if wanted and (space.project is None
-                               or space.project.id != wanted):
-                    space.open(wanted)
-                if not wanted and space.project is not None:
-                    self.send_response(302)
-                    self.send_header("Location",
-                                     "/workspace?p=" + space.project.id)
-                    self.send_header("Content-Length", "0")
-                    self.end_headers()
-                    return
-                if not space.ready:
-                    self.send_response(302)
-                    self.send_header("Location", "/")
-                    self.send_header("Content-Length", "0")
-                    self.end_headers()
-                    return
-                self._send(200, PAGE.encode("utf-8"), "text/html; charset=utf-8")
-            elif path == "/api/dataset":
-                self._json(dataset_payload(space.profile) if space.ready
-                           else {"ready": False})
-            elif path == "/api/analyses":
-                self._json(analyses_payload(space.profile) if space.ready
-                           else {"analyses": []})
-            elif path == "/api/checks":
-                self._json(checks_payload(space.project_dir) if space.ready
-                           else {"summary": "", "findings": []})
-            elif path == "/api/status":
-                self._json(status_payload(space.profile, space.project_dir))
-            elif path == "/api/session":
-                self._json({"chat": space.chat() is not None,
-                            "chainlit": False})
-            elif path == "/api/projects":
-                self._json(projects_payload(space))
-            elif path == "/api/cards":
-                # Suggesting costs a model call, so it is asked for, not
-                # implied by loading the page.
-                self._json(cards_payload(space, refresh="refresh=1" in query,
-                                         fast="fast=1" in query))
-            elif path == "/chat" or path.startswith("/chat/"):
-                # This server runs when the chat extra is not installed, so
-                # say that, rather than handing a researcher raw JSON.
-                page = (
-                    "<!doctype html><meta charset='utf-8'>"
-                    "<title>Epsilon chat</title>"
-                    "<body style=\"font-family:system-ui;background:#f4f2ee;"
-                    "color:#1c1b19;display:grid;place-items:center;"
-                    "height:100vh;margin:0\"><div style=\"max-width:34rem;"
-                    "padding:2rem\"><h1 style=\"font-size:1.3rem\">The chat "
-                    "is not installed here</h1><p>Sessions need the chat "
-                    "extra:</p><pre style=\"background:#efece6;padding:0.8rem "
-                    "1rem;border-radius:8px\">pip install 'epsilon-sdk"
-                    "[copilot,chat]'</pre><p>Then run <code>epsilon start"
-                    "</code> again. <a href=\"/\">Back to projects</a>.</p>"
-                    "</div></body>")
-                self._send(200, page.encode("utf-8"),
-                           "text/html; charset=utf-8")
-            else:
-                self._json({"error": "not found"}, 404)
-
-        def _body(self):
-            try:
-                length = int(self.headers.get("Content-Length") or 0)
-                return json.loads(self.rfile.read(length))
-            except (ValueError, TypeError):
-                return None
-
-        def do_POST(self):
-            if self.path in ("/api/run", "/api/generate"):
-                body = self._body()
-                if body is None:
-                    self._json({"error": "bad request"}, 400)
-                    return
-                if self.path == "/api/run":
-                    self._json(run_module(space.project_dir,
-                                          body.get("module", "")))
-                else:
-                    self._json(generate(space.profile, space.project_dir,
-                                        body.get("analysis", "")))
-                return
-
-            if self.path in ("/api/projects/new", "/api/projects/open",
-                             "/api/projects/forget", "/api/ask", "/api/handoff"):
-                body = self._body()
-                if body is None:
-                    self._json({"error": "bad request"}, 400)
-                    return
-                self._json(*project_route(space, self.path, body))
-                return
-
-            if self.path != "/api/chat":
-                self._json({"error": "not found"}, 404)
-                return
-            if space.chat() is None:
-                self._json({"error": "No model is configured. Run "
-                                     "'epsilon ai login', or use the panels "
-                                     "above -- they need no model."}, 400)
-                return
-            try:
-                length = int(self.headers.get("Content-Length") or 0)
-                message = json.loads(self.rfile.read(length))["message"]
-            except (ValueError, KeyError, TypeError):
-                self._json({"error": "bad request"}, 400)
-                return
-
-            steps = []
-            try:
-                reply = space.session.ask(message,
-                                    on_step=lambda s: steps.append(
-                                        {"kind": s.kind, "label": s.label}))
-            except Exception as exc:
-                self._json({"error": "{0}: {1}".format(type(exc).__name__, exc)}, 500)
-                return
-            charts = (list(space.session.box.charts)
-                      if space.session.box else [])
-            self._json({"reply": reply, "steps": steps, "charts": charts})
-
-    return Handler
-
-
-def serve(profile: Optional[Profile], project_dir: str = ".", session=None,
-          port: int = DEFAULT_PORT, open_browser: bool = True, space=None):
-    """Serve the interface on loopback until interrupted."""
-    from sdk.workspace import Workspace
-    if space is None:
-        space = Workspace(project_dir, profile, session)
-    handler = make_handler(space)
-    server = ThreadingHTTPServer(("127.0.0.1", port), handler)
-    url = "http://127.0.0.1:{0}/".format(port)
-    if open_browser:
-        threading.Timer(0.4, lambda: webbrowser.open(url)).start()
-    return server, url
 
 
 def build_page() -> str:
