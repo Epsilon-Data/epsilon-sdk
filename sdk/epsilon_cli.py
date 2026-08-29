@@ -932,11 +932,8 @@ def start(
         try:
             server, url = app_mod.serve(space, port,
                                         open_browser=not no_browser)
-        except OSError as exc:
-            typer.secho("Could not start on port {0}: {1}".format(port, exc),
-                        fg=typer.colors.RED)
-            typer.echo("Try 'epsilon start --port 8788'.")
-            raise typer.Exit(1)
+        except OSError:
+            _port_taken(port, no_browser)
         _announce(url, profile, chat="assistant at {0}chat".format(url))
         try:
             server.run()
@@ -947,11 +944,8 @@ def start(
     try:
         server, url = ui_mod.serve(profile, ".", session, port,
                                    open_browser=not no_browser, space=space)
-    except OSError as exc:
-        typer.secho("Could not start on port {0}: {1}".format(port, exc),
-                    fg=typer.colors.RED)
-        typer.echo("Try 'epsilon start --port 8788'.")
-        raise typer.Exit(1)
+    except OSError:
+        _port_taken(port, no_browser)
 
     _announce(url, profile,
               chat=("assistant ready" if session
@@ -962,6 +956,30 @@ def start(
         typer.echo("")
     finally:
         server.server_close()
+
+
+def _port_taken(port: int, no_browser: bool):
+    """The port is busy. If it is an Epsilon workspace, point at it."""
+    import json
+    import urllib.request
+    import webbrowser
+
+    url = "http://127.0.0.1:{0}/".format(port)
+    try:
+        with urllib.request.urlopen(url + "api/projects", timeout=2) as res:
+            json.load(res)
+    except Exception:
+        typer.secho("Port {0} is taken by something else.".format(port),
+                    fg=typer.colors.RED)
+        typer.echo("Try 'epsilon start --port 8788'.")
+        raise typer.Exit(1)
+    typer.secho("epsilon workspace", bold=True)
+    typer.echo("  already running at {0}".format(url))
+    typer.secho("  Stop it with Ctrl-C in its own terminal.",
+                fg=typer.colors.BRIGHT_BLACK)
+    if not no_browser:
+        webbrowser.open(url)
+    raise typer.Exit(0)
 
 
 def _announce(url, profile, chat: str) -> None:

@@ -143,10 +143,20 @@ def mount(app, project_dir: str):
 
 def serve(space: Workspace, port: int, open_browser: bool = True):
     """Run the whole workspace on one port. Blocks until interrupted."""
+    import socket
     import threading
     import webbrowser
 
     import uvicorn
+
+    # uvicorn logs a bind failure and returns instead of raising, which
+    # leaves the caller thinking a server is up. Claim the port first so a
+    # clash surfaces as the OSError the CLI already knows how to explain.
+    probe = socket.socket()
+    try:
+        probe.bind(("127.0.0.1", port))
+    finally:
+        probe.close()
 
     app = mount(build(space), space.project_dir)
     url = "http://127.0.0.1:{0}/".format(port)
