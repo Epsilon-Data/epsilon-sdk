@@ -100,9 +100,13 @@ class TestServer:
     def _get(self, url):
         return urllib.request.urlopen(url, timeout=5)
 
-    def test_serves_the_page(self, server):
-        body = self._get(server + "/").read().decode()
+    def test_serves_the_workspace(self, server):
+        body = self._get(server + "/workspace").read().decode()
         assert "<title>Epsilon workspace</title>" in body
+
+    def test_serves_the_project_list_at_the_front_door(self, server):
+        body = self._get(server + "/").read().decode()
+        assert "<title>Epsilon projects</title>" in body
 
     def test_serves_the_dataset(self, server):
         payload = json.load(self._get(server + "/api/dataset"))
@@ -638,8 +642,9 @@ class TestEntryPoint:
         threading.Thread(target=server.serve_forever, daemon=True).start()
         return server, "http://127.0.0.1:{0}".format(server.server_address[1])
 
-    def test_root_leads_to_projects_when_nothing_is_open(self, tmp_path):
-        server, base = self._serve(None, tmp_path)
+    def test_the_front_door_is_the_project_list(self, profile, dataset_dir):
+        """Even with a project open: you choose what you are working on."""
+        server, base = self._serve(profile, dataset_dir)
         try:
             body = urllib.request.urlopen(base + "/").read().decode()
             assert "<title>Epsilon projects</title>" in body
@@ -647,15 +652,41 @@ class TestEntryPoint:
             server.shutdown()
             server.server_close()
 
-    def test_root_is_the_workspace_once_a_project_is_open(self, profile,
-                                                          dataset_dir):
+    def test_the_workspace_describes_the_open_project(self, profile,
+                                                      dataset_dir):
         server, base = self._serve(profile, dataset_dir)
         try:
-            body = urllib.request.urlopen(base + "/").read().decode()
+            body = urllib.request.urlopen(base + "/workspace").read().decode()
             assert "<title>Epsilon workspace</title>" in body
         finally:
             server.shutdown()
             server.server_close()
+
+    def test_the_workspace_sends_you_back_when_nothing_is_open(self, tmp_path):
+        server, base = self._serve(None, tmp_path)
+        try:
+            body = urllib.request.urlopen(base + "/workspace").read().decode()
+            assert "<title>Epsilon projects</title>" in body
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_the_project_detail_offers_the_workspace(self):
+        from sdk.projects_page import PAGE as PROJECTS_PAGE
+        assert 'href="/workspace"' in PROJECTS_PAGE
+
+    def test_the_landing_view_is_the_list(self):
+        """The main page is what you are working on, not one project."""
+        from sdk.projects_page import PAGE as PROJECTS_PAGE
+        assert 'view: "list"' in PROJECTS_PAGE
+        assert "function listHtml()" in PROJECTS_PAGE
+
+    def test_suggesting_waits_until_a_project_is_chosen(self):
+        """A model call must not sit in front of the list."""
+        from sdk.projects_page import PAGE as PROJECTS_PAGE
+        body = PROJECTS_PAGE[PROJECTS_PAGE.index("async function load()"):]
+        body = body[:body.index("async function loadCards")]
+        assert 'if (state.view === "home") loadCards();' in body
 
     def test_the_workspace_link_is_hidden_until_there_is_a_projection(self):
         """Otherwise it sends the researcher straight back here."""

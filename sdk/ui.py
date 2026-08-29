@@ -328,21 +328,23 @@ def make_handler(space):
 
         def do_GET(self):
             path, _, query = self.path.partition("?")
-            if path in ("/", "/index.html"):
-                # The workspace describes one project. With none open there is
-                # nothing for it to describe, and the researcher needs the
-                # screen that lets them pick one.
+            # The front door is the list of projects: you choose what you are
+            # working on before anything describes it.
+            if path in ("/", "/index.html", "/projects", "/projects/"):
+                from sdk.projects_page import PAGE as PROJECTS_PAGE
+                self._send(200, PROJECTS_PAGE.encode("utf-8"),
+                           "text/html; charset=utf-8")
+            elif path in ("/workspace", "/workspace/"):
+                # The workspace describes the open project -- its set-up, its
+                # dataset and its assistant. With none open there is nothing
+                # for it to describe.
                 if not space.ready:
                     self.send_response(302)
-                    self.send_header("Location", "/projects")
+                    self.send_header("Location", "/")
                     self.send_header("Content-Length", "0")
                     self.end_headers()
                     return
                 self._send(200, PAGE.encode("utf-8"), "text/html; charset=utf-8")
-            elif path in ("/projects", "/projects/"):
-                from sdk.projects_page import PAGE as PROJECTS_PAGE
-                self._send(200, PROJECTS_PAGE.encode("utf-8"),
-                           "text/html; charset=utf-8")
             elif path == "/api/dataset":
                 self._json(dataset_payload(space.profile) if space.ready
                            else {"ready": False})

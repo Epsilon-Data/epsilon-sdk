@@ -44,16 +44,17 @@ def build(space: Workspace):
 
     @app.get("/", response_class=HTMLResponse)
     @app.get("/index.html", response_class=HTMLResponse)
-    async def page():
-        # With no project open the workspace has nothing to describe.
-        if not space.ready:
-            return RedirectResponse("/projects")
-        return HTMLResponse(ui_mod.PAGE)
-
     @app.get("/projects", response_class=HTMLResponse)
     async def projects_page():
+        """The front door: what you are working on."""
         from sdk.projects_page import PAGE as PROJECTS_PAGE
         return HTMLResponse(PROJECTS_PAGE)
+
+    @app.get("/workspace", response_class=HTMLResponse)
+    async def workspace_page():
+        if not space.ready:
+            return RedirectResponse("/")
+        return HTMLResponse(ui_mod.PAGE)
 
     @app.get("/api/dataset")
     async def dataset():

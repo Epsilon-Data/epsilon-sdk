@@ -204,6 +204,13 @@ PAGE = r'''<!doctype html>
   .step.done code { background: transparent; padding-left: 0; color: var(--muted); }
   .step small { display: block; color: var(--muted); font-size: 12px; margin-top: 4px; }
 
+  .back {
+    background: none; border: 0; padding: 0; margin: 0 0 16px;
+    color: var(--muted); font-size: 13px;
+  }
+  .back:hover { color: var(--ink); }
+  .brand { cursor: pointer; }
+
   .spin { color: var(--muted); font-size: 13px; }
   @media (prefers-reduced-motion: no-preference) {
     .card, .rail-item, .primary { transition: all .12s ease; }
@@ -227,7 +234,7 @@ const esc = (t) => String(t == null ? "" : t)
   .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
 const state = { projects: [], openId: null, cards: null, steps: null,
-                view: "home", error: "", busy: false };
+                view: "list", error: "", busy: false };
 
 async function api(path, body) {
   const res = await fetch(path, body ? {
@@ -245,6 +252,8 @@ async function load() {
   state.openId = p.openId;
   if (!state.projects.length) state.view = "new";
   paint();
+  // Suggesting costs a model call, so it waits until a project is chosen --
+  // the list itself must open instantly.
   if (state.view === "home") loadCards();
 }
 
@@ -269,11 +278,14 @@ async function loadCards(refresh) {
 
 // -- actions ---------------------------------------------------------
 
-async function openProject(id) {
-  state.error = ""; state.view = "home";
+async function openProject(id, enter) {
+  state.error = ""; state.view = "home"; state.cards = null;
   try {
-    await api("/api/projects/open", { id: id });
+    const out = await api("/api/projects/open", { id: id });
     state.openId = id;
+    // A project with a projection has a workspace to show; one without has
+    // set-up steps, which live here.
+    if (enter && out.ready) { window.location.href = "/workspace"; return; }
     await load();
   } catch (e) { state.error = e.message; paint(); }
 }
@@ -387,12 +399,32 @@ function stepsHtml() {
     '</section>');
 }
 
+function listHtml() {
+  if (!state.projects.length) return newHtml();
+  return (
+    '<div class="eyebrow">Projects</div>' +
+    '<h1>What are you working on?</h1>' +
+    '<p class="desc">Each one points at a folder on this machine. Open it to ' +
+      'see what its dataset can answer, or to pick up where you left off.</p>' +
+    '<section><div class="cards">' + state.projects.map(p => (
+      '<button class="card" data-open="' + esc(p.id) + '">' +
+        '<h3>' + esc(p.name) + '</h3>' +
+        '<p>' + esc(p.description || "No description.") + '</p>' +
+        '<footer>' +
+          (p.exists
+            ? (p.initialised ? 'ready' : 'needs set-up')
+            : '<span class="flag">folder missing</span>') +
+        '</footer>' +
+      '</button>')).join("") + '</div></section>');
+}
+
 function homeHtml(p) {
   const facts = [];
   if (state.cards && state.cards.ready) {
     facts.push(['Analyses offered', state.cards.cards.length]);
   }
   return (
+    '<button class="back" data-list="1">← Projects</button>' +
     '<div class="eyebrow">Project</div>' +
     '<h1>' + esc(p.name) + '</h1>' +
     (p.description ? '<p class="desc">' + esc(p.description) + '</p>' : '') +
@@ -423,7 +455,8 @@ function homeHtml(p) {
         // The workspace describes a projection, so it is only offered once
         // there is one; otherwise it would bounce straight back here.
         (p.initialised
-          ? '<a class="ghost" style="text-decoration:none" href="/">Open the workspace</a>'
+          ? '<a class="primary" style="text-decoration:none" ' +
+            'href="/workspace">Open the workspace</a>'
           : '') +
         '<button class="ghost" data-forget="' + esc(p.id) + '">Forget this project</button>' +
       '</div>' +
@@ -466,7 +499,9 @@ function paint() {
   paintRail();
   const p = open();
   let html;
-  if (state.view === "new" || !p) html = newHtml();
+  if (state.view === "new") html = newHtml();
+  else if (state.view === "list") html = listHtml();
+  else if (!p) html = listHtml();
   else html = homeHtml(p);
   if (state.error) html += '<div class="err">' + esc(state.error) + '</div>';
   $("main").innerHTML = html;
@@ -476,18 +511,23 @@ function paint() {
   const askform = $("askform");
   if (askform) askform.addEventListener("submit", ask);
   const cancel = $("cancel");
-  if (cancel) cancel.onclick = () => { state.view = "home"; paint(); };
+  if (cancel) cancel.onclick = () => { state.view = "list"; paint(); };
 }
 
 document.addEventListener("click", (ev) => {
-  const el = ev.target.closest("[data-open], [data-card], [data-forget]");
+  const el = ev.target.closest(
+    "[data-open], [data-card], [data-forget], [data-list]");
   if (!el) return;
-  if (el.dataset.open) openProject(el.dataset.open);
+  if (el.dataset.list) { state.view = "list"; state.error = ""; paint(); return; }
+  if (el.dataset.open) openProject(el.dataset.open, false);
   else if (el.dataset.card) openSession({ index: Number(el.dataset.card) }, "/api/handoff");
   else if (el.dataset.forget) forget(el.dataset.forget);
 });
 
 $("new").onclick = () => { state.view = "new"; state.error = ""; paint(); };
+document.querySelector(".brand").onclick = () => {
+  state.view = "list"; state.error = ""; paint();
+};
 
 load().catch(e => { $("main").innerHTML = '<div class="err">' + esc(e.message) + '</div>'; });
 </script>
