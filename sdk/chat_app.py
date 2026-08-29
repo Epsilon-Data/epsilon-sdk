@@ -136,6 +136,31 @@ async def on_message(message: cl.Message):
         await drainer
 
     await cl.Message(content=reply).send()
+    await _send_charts(session)
+
+
+async def _send_charts(session: Session) -> None:
+    """Draw whatever the analyses produced this turn.
+
+    The numbers come from the released result, never from the model, so a
+    chart cannot disagree with the table beside it.
+    """
+    for chart in (session.box.charts if session.box else []):
+        groups = [{
+            "label": g["label"],
+            "bars": [{"who": str(value)[:24],
+                      "value": count,
+                      "label": "{0:,}".format(count)}
+                     for value, count in g["pairs"]],
+        } for g in chart["groups"]]
+
+        element = cl.CustomElement(name="BarChart", props={
+            "title": chart["title"],
+            "caption": chart["source"],
+            "groups": groups,
+            "held": chart.get("held", 0),
+        })
+        await cl.Message(content="", elements=[element]).send()
 
 
 _CALL = re.compile(r"^(\w+)(?:\((.*)\))?$")
