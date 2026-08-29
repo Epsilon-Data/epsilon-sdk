@@ -124,6 +124,7 @@ archetype-scoped projection, and the SDK measures it. There is nothing for a
 data owner to author and nothing to keep in sync.
 
 ```bash
+epsilon ui                            # all of the below, in a browser
 epsilon explain                       # the dataset, and every analysis it does
                                       # and does not support
 epsilon explain --brief               # dataset only
@@ -135,6 +136,17 @@ epsilon check                         # run the submission rules locally
 
 Fields are chosen for you; `--set` overrides one, validated against what was
 measured. The command `epsilon explain` prints is the one that reproduces it.
+
+### `epsilon ui` -- the browser view
+
+```bash
+epsilon ui
+```
+
+Opens a page showing what the dataset holds, what it can and cannot answer with
+reasons, and a chat box if a model is configured. It serves on loopback only
+and runs beside your project, so the data and your key never leave the machine.
+Standard library only -- no node toolchain, no network access needed.
 
 ### What is measured, and what cannot be
 

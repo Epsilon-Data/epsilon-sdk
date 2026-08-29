@@ -25,6 +25,7 @@ from sdk import checks as checks_mod
 from sdk import explain as explain_mod
 from sdk import snippets as snippets_mod
 from sdk import agent as agent_mod
+from sdk import ui as ui_mod
 import re
 import shutil
 import traceback
@@ -967,6 +968,56 @@ def chat(
         if not text.strip():
             continue
         run(text)
+
+
+@app.command()
+def ui(
+        port: int = typer.Option(ui_mod.DEFAULT_PORT, help="Port to serve on."),
+        no_browser: bool = typer.Option(
+            False, "--no-browser", help="Do not open a browser."),
+        no_record: bool = typer.Option(
+            False, "--no-record", help="Do not write a chat transcript.")
+):
+    """
+    Open the copilot in a browser.
+
+    Shows what the dataset holds and what it can and cannot answer, with chat
+    if a model is configured. Serves on loopback only -- it runs beside your
+    project, so the data and your key never leave this machine.
+    """
+    profile = _profile_project_or_exit()
+
+    session = None
+    try:
+        from sdk import llm
+        if llm.available():
+            provider = llm.get_provider(llm.TIER_A, "the copilot agent")
+            session = agent_mod.Session.create(
+                provider, profile, project_dir=".", record=not no_record)
+    except Exception as exc:
+        typer.secho("Chat disabled: {0}".format(exc), fg=typer.colors.YELLOW)
+
+    try:
+        server, url = ui_mod.serve(profile, ".", session, port,
+                                   open_browser=not no_browser)
+    except OSError as exc:
+        typer.secho("Could not start on port {0}: {1}".format(port, exc),
+                    fg=typer.colors.RED)
+        typer.echo("Try 'epsilon ui --port 8788'.")
+        raise typer.Exit(1)
+
+    typer.secho("epsilon copilot", bold=True)
+    typer.echo("  {0}".format(url))
+    typer.secho("  {0} | {1}".format(
+        profile.title, "chat enabled" if session else "no model - panels only"),
+        fg=typer.colors.BRIGHT_BLACK)
+    typer.secho("  Ctrl-C to stop", fg=typer.colors.BRIGHT_BLACK)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        typer.echo("")
+    finally:
+        server.server_close()
 
 
 @app.command()
