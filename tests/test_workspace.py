@@ -130,14 +130,18 @@ class TestCards:
 
 
 class TestSeeds:
+    def _card(self, space, i=0):
+        """A card as the page would send it back."""
+        return space.fallback_cards()[i].to_json()
+
     def test_a_card_becomes_a_seed(self, space):
-        seed = space.hand_off(0)
+        seed = space.hand_off(self._card(space))
         assert seed is not None
         assert seed.question
         assert seed.project_dir == space.project_dir
 
     def test_the_brief_names_the_analysis_to_start_from(self, space):
-        seed = space.hand_off(0)
+        seed = space.hand_off(self._card(space))
         assert seed.question in seed.brief()
         assert seed.analysis in seed.brief()
 
@@ -146,34 +150,40 @@ class TestSeeds:
         assert seed.analysis == ""
         assert seed.brief() == "What is the age distribution?"
 
-    def test_an_out_of_range_card_hands_off_nothing(self, space):
-        assert space.hand_off(99) is None
-        assert space.hand_off(-1) is None
+    def test_a_blocked_card_hands_off_nothing(self, space):
+        """A forged or stale card is re-checked against the catalogue."""
+        assert space.hand_off({"title": "Prevalence", "question": "q",
+                               "analysis": "prevalence", "fields": {}}) is None
+
+    def test_garbage_hands_off_nothing(self, space):
+        assert space.hand_off(None) is None
+        assert space.hand_off({}) is None
+        assert space.hand_off("card") is None
 
     def test_a_seed_is_claimed_by_token(self, space):
-        seed = space.hand_off(0)
+        seed = space.hand_off(self._card(space))
         claimed = ws.take_seed(seed.token)
         assert claimed is not None
         assert claimed.title == seed.title
 
     def test_a_seed_is_claimed_only_once(self, space):
-        seed = space.hand_off(0)
+        seed = space.hand_off(self._card(space))
         assert ws.take_seed(seed.token) is not None
         assert ws.take_seed(seed.token) is None
 
     def test_the_newest_seed_is_claimed_when_the_token_is_lost(self, space):
-        space.hand_off(0)
-        second = space.hand_off(1) or space.hand_off(0)
+        space.hand_off(self._card(space, 0))
+        second = space.hand_off(self._card(space, 1))
         claimed = ws.take_seed()
         assert claimed is not None
         assert claimed.token == second.token
 
     def test_an_unknown_token_claims_nothing(self, space):
-        space.hand_off(0)
+        space.hand_off(self._card(space))
         assert ws.take_seed("not-a-token") is None
 
     def test_a_stale_seed_is_not_claimed(self, space, monkeypatch):
-        space.hand_off(0)
+        space.hand_off(self._card(space))
         later = time.time() + ws.SEED_TTL + 10
         monkeypatch.setattr(ws.time, "time", lambda: later)
         assert ws.take_seed() is None
@@ -182,7 +192,7 @@ class TestSeeds:
         assert ws.take_seed() is None
 
     def test_seeds_are_kept_privately(self, space):
-        space.hand_off(0)
+        space.hand_off(self._card(space))
         assert os.stat(ws.seed_dir()).st_mode & 0o077 == 0
 
 

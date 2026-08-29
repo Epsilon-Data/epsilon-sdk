@@ -227,29 +227,36 @@ class Workspace:
         self._suggestions = suggest_mod.propose(self.profile, provider)
         return self._suggestions
 
+    def fallback_cards(self) -> List[suggest_mod.Suggestion]:
+        """What the catalogue alone offers -- instant, no model call."""
+        if self.profile is None:
+            return []
+        return suggest_mod.fallback(self.profile)
+
     # -- handing a card to a session -------------------------------------
 
-    def hand_off(self, index: int) -> Optional[Seed]:
-        """Prepare a session seeded with one card's context."""
-        cards = self.cards()
-        if index < 0 or index >= len(cards):
+    def hand_off(self, raw) -> Optional[Seed]:
+        """Prepare a session seeded with one card's context.
+
+        The card comes back from the page, so it is validated against the
+        catalogue again before anything is seeded: what was true when the
+        card was drawn must still be true now, and a forged or stale card
+        that names a blocked analysis seeds nothing.
+        """
+        if self.profile is None or not isinstance(raw, dict):
             return None
-        card = cards[index]
-        self._counter += 1
-        token = "{0}-{1}-{2}".format(
-            (self.project.id if self.project else "project"),
-            int(time.time()), self._counter)
-        seed = Seed(token=token,
-                    project_id=self.project.id if self.project else "",
-                    project_dir=self.project_dir,
-                    title=card.title, question=card.question,
-                    analysis=card.analysis, fields=dict(card.fields),
-                    created=time.time())
-        put_seed(seed)
-        return seed
+        card = suggest_mod.validate(self.profile, raw)
+        if card is None:
+            return None
+        return self._seed(title=card.title, question=card.question,
+                          analysis=card.analysis, fields=dict(card.fields))
 
     def ask_seed(self, question: str) -> Seed:
         """Prepare a session for a free-typed question."""
+        return self._seed(title=question[:60], question=question)
+
+    def _seed(self, title: str, question: str, analysis: str = "",
+              fields: Optional[Dict[str, str]] = None) -> Seed:
         self._counter += 1
         token = "{0}-{1}-{2}".format(
             (self.project.id if self.project else "project"),
@@ -257,7 +264,8 @@ class Workspace:
         seed = Seed(token=token,
                     project_id=self.project.id if self.project else "",
                     project_dir=self.project_dir,
-                    title=question[:60], question=question,
+                    title=title, question=question,
+                    analysis=analysis, fields=fields or {},
                     created=time.time())
         put_seed(seed)
         return seed

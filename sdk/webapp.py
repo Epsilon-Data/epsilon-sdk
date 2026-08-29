@@ -50,6 +50,12 @@ def build(space: Workspace):
         from sdk.projects_page import PAGE as PROJECTS_PAGE
         return HTMLResponse(PROJECTS_PAGE)
 
+    @app.get("/projects/{project_id}", response_class=HTMLResponse)
+    async def project_detail(project_id: str):
+        """The same page; it reads its project from the URL."""
+        from sdk.projects_page import PAGE as PROJECTS_PAGE
+        return HTMLResponse(PROJECTS_PAGE)
+
     @app.get("/workspace", response_class=HTMLResponse)
     async def workspace_page():
         if not space.ready:
@@ -84,8 +90,9 @@ def build(space: Workspace):
         return ui_mod.projects_payload(space)
 
     @app.get("/api/cards")
-    async def cards(refresh: int = 0):
-        return ui_mod.cards_payload(space, refresh=bool(refresh))
+    async def cards(refresh: int = 0, fast: int = 0):
+        return ui_mod.cards_payload(space, refresh=bool(refresh),
+                                    fast=bool(fast))
 
     @app.post("/api/run")
     async def run(request: Request):

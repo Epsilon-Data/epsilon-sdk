@@ -187,24 +187,36 @@ def projects_payload(space) -> Dict[str, Any]:
             "openPath": space.project_dir, "registered": space.project is not None}
 
 
-def cards_payload(space, refresh: bool = False) -> Dict[str, Any]:
-    """The analyses worth running here, as the page draws them."""
+def cards_payload(space, refresh: bool = False,
+                  fast: bool = False) -> Dict[str, Any]:
+    """The analyses worth running here, as the page draws them.
+
+    `fast` skips the model: the catalogue answers instantly, and the page
+    asks again for model suggestions once it has something on screen. A model
+    call must never sit between the researcher and the page.
+    """
     if not space.ready:
-        return {"cards": [], "ready": False, "suggested": False}
+        return {"cards": [], "ready": False, "suggested": False,
+                "canSuggest": False}
 
     from sdk import llm
-    cards = space.cards(refresh=refresh)
+    can_suggest = llm.available()
+    if fast:
+        cards, suggested = space.fallback_cards(), False
+    else:
+        cards, suggested = space.cards(refresh=refresh), can_suggest
     return {
         "ready": True,
         # Whether a model proposed these or the catalogue alone did. The page
         # says which, so a researcher is never told a machine suggested
         # something it did not.
-        "suggested": llm.available(),
+        "suggested": suggested,
+        "canSuggest": can_suggest,
         "cards": [{
-            "index": i, "title": c.title, "question": c.question,
+            "title": c.title, "question": c.question,
             "why": c.why, "analysis": c.analysis, "fields": c.fields,
             "warnings": c.warnings,
-        } for i, c in enumerate(cards)],
+        } for c in cards],
     }
 
 
@@ -241,7 +253,7 @@ def project_route(space, path, body):
 
     # A card, or a typed question, becomes a session.
     if path == "/api/handoff":
-        seed = space.hand_off(int(body.get("index", -1)))
+        seed = space.hand_off(body.get("card"))
     else:
         question = (body.get("question") or "").strip()
         seed = space.ask_seed(question) if question else None
@@ -330,7 +342,8 @@ def make_handler(space):
             path, _, query = self.path.partition("?")
             # The front door is the list of projects: you choose what you are
             # working on before anything describes it.
-            if path in ("/", "/index.html", "/projects", "/projects/"):
+            if (path in ("/", "/index.html", "/projects")
+                    or path.startswith("/projects/")):
                 from sdk.projects_page import PAGE as PROJECTS_PAGE
                 self._send(200, PROJECTS_PAGE.encode("utf-8"),
                            "text/html; charset=utf-8")
@@ -363,7 +376,8 @@ def make_handler(space):
             elif path == "/api/cards":
                 # Suggesting costs a model call, so it is asked for, not
                 # implied by loading the page.
-                self._json(cards_payload(space, refresh="refresh=1" in query))
+                self._json(cards_payload(space, refresh="refresh=1" in query,
+                                         fast="fast=1" in query))
             else:
                 self._json({"error": "not found"}, 404)
 

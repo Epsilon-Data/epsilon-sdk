@@ -531,25 +531,48 @@ class TestCardRoutes:
         payload = json.load(urllib.request.urlopen(server + "/api/cards"))
         assert all(c["analysis"] in feasible for c in payload["cards"])
 
+    def _first_card(self, server):
+        payload = json.load(urllib.request.urlopen(server + "/api/cards"))
+        return payload["cards"][0]
+
     def test_a_card_hands_off_to_a_session(self, server):
-        out = self._post(server + "/api/handoff", {"index": 0})
+        out = self._post(server + "/api/handoff",
+                         {"card": self._first_card(server)})
         assert out["url"].startswith("/chat?seed=")
         assert out["title"]
 
     def test_the_seed_can_be_claimed_once(self, server):
         from sdk import workspace
-        out = self._post(server + "/api/handoff", {"index": 0})
+        out = self._post(server + "/api/handoff",
+                         {"card": self._first_card(server)})
         token = out["token"]
         assert workspace.take_seed(token) is not None
         assert workspace.take_seed(token) is None
 
-    def test_an_out_of_range_card_is_refused(self, server):
+    def test_a_blocked_card_is_refused(self, server):
+        """The server re-validates: a forged card seeds nothing."""
+        card = {"title": "Prevalence", "question": "q",
+                "analysis": "prevalence", "fields": {}}
         request = urllib.request.Request(
-            server + "/api/handoff", data=json.dumps({"index": 99}).encode(),
+            server + "/api/handoff", data=json.dumps({"card": card}).encode(),
             headers={"Content-Type": "application/json"})
         with pytest.raises(urllib.error.HTTPError) as exc:
             urllib.request.urlopen(request, timeout=5)
         assert exc.value.code == 400
+
+    def test_fast_cards_never_touch_the_model(self, server, monkeypatch):
+        """The catalogue answers instantly, whatever the model is doing."""
+        from sdk import suggestions
+
+        def explode(*a, **kw):
+            raise AssertionError("fast cards must not call propose()")
+
+        monkeypatch.setattr(suggestions, "propose", explode)
+        payload = json.load(
+            urllib.request.urlopen(server + "/api/cards?fast=1"))
+        assert payload["ready"] is True
+        assert payload["suggested"] is False
+        assert payload["cards"]
 
     def test_a_typed_question_opens_a_session(self, server):
         from sdk import workspace
@@ -675,18 +698,28 @@ class TestEntryPoint:
         from sdk.projects_page import PAGE as PROJECTS_PAGE
         assert 'href="/workspace"' in PROJECTS_PAGE
 
-    def test_the_landing_view_is_the_list(self):
-        """The main page is what you are working on, not one project."""
+    def test_each_project_has_a_real_url(self):
+        """Detail is a page, not a view swap: back and reload behave."""
         from sdk.projects_page import PAGE as PROJECTS_PAGE
-        assert 'view: "list"' in PROJECTS_PAGE
-        assert "function listHtml()" in PROJECTS_PAGE
+        assert "/projects/' + esc(p.id)" in PROJECTS_PAGE
+        assert "location.pathname" in PROJECTS_PAGE
 
-    def test_suggesting_waits_until_a_project_is_chosen(self):
-        """A model call must not sit in front of the list."""
+    def test_the_catalogue_answers_before_the_model(self):
+        """The page draws fast cards first, then swaps in suggestions."""
         from sdk.projects_page import PAGE as PROJECTS_PAGE
-        body = PROJECTS_PAGE[PROJECTS_PAGE.index("async function load()"):]
-        body = body[:body.index("async function loadCards")]
-        assert 'if (state.view === "home") loadCards();' in body
+        assert 'api("/api/cards?fast=1")' in PROJECTS_PAGE
+        assert PROJECTS_PAGE.index('"/api/cards?fast=1"') < \
+            PROJECTS_PAGE.index('await api("/api/cards").catch')
+
+    def test_a_project_detail_url_serves_the_page(self, profile, dataset_dir):
+        server, base = self._serve(profile, dataset_dir)
+        try:
+            body = urllib.request.urlopen(
+                base + "/projects/diabetes-risk").read().decode()
+            assert "<title>Epsilon projects</title>" in body
+        finally:
+            server.shutdown()
+            server.server_close()
 
     def test_the_workspace_link_is_hidden_until_there_is_a_projection(self):
         """Otherwise it sends the researcher straight back here."""
@@ -705,7 +738,7 @@ class TestSetupSteps:
     def test_steps_replace_the_cards_until_there_is_a_projection(self):
         from sdk.projects_page import PAGE as PROJECTS_PAGE
         assert "p.initialised" in PROJECTS_PAGE
-        assert "stepsHtml()" in PROJECTS_PAGE
+        assert "stepsHtml(" in PROJECTS_PAGE
 
     def test_the_steps_carry_a_command_and_a_done_flag(self, profile,
                                                        dataset_dir):
