@@ -227,6 +227,24 @@ class Workspace:
         self._suggestions = suggest_mod.propose(self.profile, provider)
         return self._suggestions
 
+    def chat(self):
+        """The workspace assistant's session, created when first needed.
+
+        `epsilon start` builds one for the directory it started in, but
+        opening another project drops it, so the chat re-creates a session
+        for whichever project is open now.
+        """
+        if self.session is None and self.profile is not None:
+            try:
+                from sdk import llm
+                from sdk.agent import Session
+                provider = llm.get_provider(llm.TIER_A, "the copilot agent")
+                self.session = Session.create(provider, self.profile,
+                                              project_dir=self.project_dir)
+            except Exception:
+                self.session = None
+        return self.session
+
     def fallback_cards(self) -> List[suggest_mod.Suggestion]:
         """What the catalogue alone offers -- instant, no model call."""
         if self.profile is None:

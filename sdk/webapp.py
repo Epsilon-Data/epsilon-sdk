@@ -87,7 +87,7 @@ def build(space: Workspace):
 
     @app.get("/api/session")
     async def session():
-        return {"chat": True}
+        return {"chat": space.chat() is not None}
 
     @app.get("/api/projects")
     async def projects():
@@ -108,6 +108,38 @@ def build(space: Workspace):
         body = await _body(request)
         return ui_mod.generate(space.profile, space.project_dir,
                                body.get("analysis", ""))
+
+    @app.post("/api/chat")
+    async def chat(request: Request):
+        """The workspace page's assistant -- same contract as the stdlib
+        server: {reply, steps, charts}, or {error} with a reason."""
+        import asyncio
+
+        body = await _body(request)
+        message = (body.get("message") or "").strip()
+        if not message:
+            return JSONResponse({"error": "bad request"}, status_code=400)
+        session = space.chat()
+        if session is None:
+            return JSONResponse(
+                {"error": "No model is configured. Run 'epsilon ai login', "
+                          "or use the panels above -- they need no model."},
+                status_code=400)
+
+        steps = []
+
+        def work():
+            return session.ask(message, on_step=lambda s: steps.append(
+                {"kind": s.kind, "label": s.label}))
+
+        try:
+            reply = await asyncio.get_running_loop().run_in_executor(None, work)
+        except Exception as exc:
+            return JSONResponse(
+                {"error": "{0}: {1}".format(type(exc).__name__, exc)},
+                status_code=500)
+        charts = list(session.box.charts) if session.box else []
+        return {"reply": reply, "steps": steps, "charts": charts}
 
     @app.post("/api/projects/new")
     @app.post("/api/projects/open")

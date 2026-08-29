@@ -238,3 +238,29 @@ class TestAutoRegister:
         ws.Workspace(str(dataset_dir), profile, register=True)
         ws.Workspace(str(dataset_dir), profile, register=True)
         assert len(registry.load()) == 1
+
+
+class TestChatSession:
+    def test_no_model_means_no_session(self, space):
+        assert space.chat() is None
+
+    def test_a_preset_session_is_kept(self, dataset_dir, no_model):
+        marker = object()
+        space = ws.Workspace(str(dataset_dir), profile_project(str(dataset_dir)),
+                             session=marker)
+        assert space.chat() is marker
+
+    def test_no_project_means_no_session(self, tmp_path, no_model):
+        folder = tmp_path / "empty"
+        folder.mkdir()
+        assert ws.Workspace(str(folder)).chat() is None
+
+    def test_opening_another_project_drops_the_old_session(self, dataset_dir,
+                                                           no_model):
+        from sdk import projects as registry
+        registry.add("Cohort", str(dataset_dir))
+        space = ws.Workspace(str(dataset_dir),
+                             profile_project(str(dataset_dir)),
+                             session=object())
+        space.open("cohort")
+        assert space.session is None

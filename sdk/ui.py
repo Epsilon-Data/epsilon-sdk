@@ -385,7 +385,7 @@ def make_handler(space):
             elif path == "/api/status":
                 self._json(status_payload(space.profile, space.project_dir))
             elif path == "/api/session":
-                self._json({"chat": space.session is not None})
+                self._json({"chat": space.chat() is not None})
             elif path == "/api/projects":
                 self._json(projects_payload(space))
             elif path == "/api/cards":
@@ -447,7 +447,7 @@ def make_handler(space):
             if self.path != "/api/chat":
                 self._json({"error": "not found"}, 404)
                 return
-            if space.session is None:
+            if space.chat() is None:
                 self._json({"error": "No model is configured. Run "
                                      "'epsilon ai login', or use the panels "
                                      "above -- they need no model."}, 400)
