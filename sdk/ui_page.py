@@ -785,6 +785,92 @@ function expand(tpl, scope){
 }
 
 // ---------------------------------------------------------------------------
+// A model answers in markdown; the design renders typed blocks. Without this,
+// a generated script arrives as one unbroken paragraph with backticks in it.
+// ---------------------------------------------------------------------------
+
+const FENCE = /```([\w.+-]*)[ \t]*\r?\n([\s\S]*?)```/g;
+
+// Markdown a plain-text block cannot show: the markers would render literally.
+function tidy(md){
+  return md
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/(^|\s)\*([^*\n]+)\*/g, "$1$2")
+    .replace(/^#{1,6}[ \t]*/gm, "")
+    .replace(/`([^`\n]+)`/g, "$1")
+    .replace(/^[ \t]*[-*][ \t]+/gm, "• ")
+    .replace(/[ \t]+$/gm, "")
+    .trim();
+}
+
+// A markdown table: a header row, a |---| rule, then body rows.
+function asTable(para){
+  const lines = para.split("\n").map(l => l.trim()).filter(Boolean);
+  if (lines.length < 3 || !lines[0].startsWith("|")) return null;
+  if (!/^\|[\s:|-]+\|$/.test(lines[1])) return null;
+
+  const split = row => row.replace(/^\||\|$/g, "").split("|").map(c => c.trim());
+  const head = split(lines[0]);
+  const rows = lines.slice(2).map(split).filter(r => r.length === head.length);
+  if (!rows.length) return null;
+
+  const cells = [];
+  rows.forEach(r => r.forEach((t, i) => {
+    // A withheld cell is the point of the suppression rule; show it as such.
+    const withheld = /suppressed|^none$|^null$|^-+$/i.test(t) || t === "";
+    cells.push({
+      t: withheld ? "— suppressed" : t,
+      align: i === 0 ? "left" : "right",
+      fg: withheld ? "#a33a2b" : (i === 0 ? "#33302b" : "#1c1b19"),
+      bg: withheld ? "#fdf6f4" : "transparent"
+    });
+  }));
+
+  return {
+    kind: "table",
+    head: head.map((t, i) => ({ t: t, align: i === 0 ? "left" : "right" })),
+    cells: cells,
+    grid: "1.3fr repeat(" + (head.length - 1) + ", minmax(0, 1fr))",
+    caption: rows.length + (rows.length === 1 ? " row" : " rows"),
+    footer: ""
+  };
+}
+
+function pushProse(blocks, raw){
+  const text = tidy(raw || "");
+  if (!text) return;
+  // Blank lines are paragraph breaks; the design renders one block per idea.
+  for (const para of text.split(/\n{2,}/)) {
+    const t = para.trim();
+    if (!t) continue;
+    const table = asTable(t);
+    if (table) blocks.push(table);
+    else blocks.push({ kind: "text", text: t });
+  }
+}
+
+function parseReply(reply){
+  const blocks = [];
+  let last = 0, m;
+  FENCE.lastIndex = 0;
+  while ((m = FENCE.exec(reply)) !== null) {
+    const before = reply.slice(last, m.index);
+    pushProse(blocks, before);
+    // The last filename mentioned before the fence labels the panel.
+    const named = before.match(/[\w./-]+\.(?:py|json|csv|md|svg)/g);
+    blocks.push({
+      kind: "code",
+      code: m[2].replace(/\s+$/, ""),
+      file: named ? named[named.length - 1] : "snippet",
+      badge: m[1] || "python"
+    });
+    last = FENCE.lastIndex;
+  }
+  pushProse(blocks, reply.slice(last));
+  return blocks;
+}
+
+// ---------------------------------------------------------------------------
 // The component. renderVals() below is the design's own, unmodified; it calls
 // the data methods, which read the live project instead of the mockup's
 // fixtures.
@@ -888,7 +974,7 @@ class App {
       turn.blocks.push({ kind: "tool", name: bits ? bits[1] : s.label,
                          arg: bits && bits[2] ? bits[2] : "" });
     }
-    turn.blocks.push({ kind: "text", text: r.reply || r.error || "" });
+    for (const b of parseReply(r.reply || r.error || "")) turn.blocks.push(b);
     this.setState({ thinking: null });
   }
 

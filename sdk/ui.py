@@ -365,6 +365,17 @@ def _strip_fixtures(js: str) -> str:
 # text, because a design does not need to accept typing. These substitutions
 # make the decorative parts real while leaving every surrounding style intact.
 _LIVE = [
+    # The design assumed one flowing paragraph; a model returns lists and
+    # short lines, which collapse without this.
+    ('<div style="font-size: 14.5px; line-height: 1.68; color: #26241f; '
+     'text-wrap: pretty;">{{ b.text }}</div>',
+     '<div style="font-size: 14.5px; line-height: 1.68; color: #26241f; '
+     'text-wrap: pretty; white-space: pre-wrap;">{{ b.text }}</div>'),
+    # The design's table is fixed at five columns; a real result has as many
+    # as the analysis produced.
+    ('<div style="display: grid; grid-template-columns: 1.3fr repeat(4, '
+     'minmax(0, 1fr)); gap: 0;">',
+     '<div style="display: grid; grid-template-columns: {{ b.grid }}; gap: 0;">'),
     ("Projection you received &mdash; 10 columns",
      "Projection you received &mdash; {{ grantedCount }} columns"),
     ('<div style="flex: 1; font-size: 13.5px; color: #a8a39a;">{{ inputHint }}</div>',

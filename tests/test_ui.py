@@ -292,3 +292,74 @@ class TestTheMockupsDecorativeParts:
         from sdk import ui_page
         assert "carry" in ui_page.RUNTIME
         assert "document.activeElement" in ui_page.RUNTIME
+
+
+class TestReplyFormatting:
+    """A model answers in markdown; the design renders typed blocks. Without a
+    parser a generated script arrives as one unbroken paragraph with literal
+    backticks in it."""
+
+    def _parser(self):
+        import re
+        from sdk import ui_page
+        start = ui_page.RUNTIME.index("const FENCE")
+        end = ui_page.RUNTIME.index("// The component.")
+        return ui_page.RUNTIME[start:end]
+
+    def test_the_parser_ships(self):
+        src = self._parser()
+        for fn in ("function tidy(", "function pushProse(", "function parseReply("):
+            assert fn in src
+
+    def test_fenced_code_becomes_its_own_block(self):
+        assert 'kind: "code"' in self._parser()
+
+    def test_a_filename_labels_the_panel(self):
+        assert "named[named.length - 1]" in self._parser()
+
+    def test_markdown_markers_are_stripped(self):
+        src = self._parser()
+        # bold, headings and inline code would otherwise render literally
+        assert r"\*\*([^*]+)\*\*" in src
+        assert r"^#{1,6}[ \t]*" in src
+
+    def test_paragraphs_are_split(self):
+        assert r"split(/\n{2,}/)" in self._parser()
+
+    def test_text_blocks_keep_their_line_breaks(self):
+        """Lists collapse onto one line without this."""
+        from sdk.ui import PAGE
+        assert "white-space: pre-wrap" in PAGE
+
+
+class TestTableFormatting:
+    """A model returns markdown tables. Rendered as text they are a wall of
+    pipes; the design has a table block, so use it."""
+
+    def _parser(self):
+        from sdk import ui_page
+        start = ui_page.RUNTIME.index("const FENCE")
+        end = ui_page.RUNTIME.index("// The component.")
+        return ui_page.RUNTIME[start:end]
+
+    def test_the_table_parser_ships(self):
+        assert "function asTable(" in self._parser()
+
+    def test_a_withheld_cell_is_shown_as_withheld(self):
+        """Suppression is the point of the rule, not an empty cell."""
+        src = self._parser()
+        assert "suppressed|^none$|^null$" in src
+        assert "— suppressed" in src
+
+    def test_the_column_count_follows_the_data(self):
+        """Only the table's grid becomes dynamic; the stats block below it is
+        genuinely four columns and stays as designed."""
+        from sdk.ui import PAGE
+        assert "{{ b.grid }}" in PAGE
+        assert "1.3fr repeat(4, minmax(0, 1fr))" not in PAGE
+        assert 'grid: "1.3fr repeat(" + (head.length - 1)' in self._parser()
+
+    def test_a_paragraph_that_is_not_a_table_stays_text(self):
+        src = self._parser()
+        # the rule row is required, so prose with pipes is not mistaken for one
+        assert r"/^\|[\s:|-]+\|$/" in src
