@@ -121,7 +121,11 @@ def add(name: str, path: str, description: str = "") -> Project:
     The path must exist. It need not be initialised yet -- a researcher can
     register a folder and run `epsilon init` into it afterwards.
     """
-    full = os.path.abspath(os.path.expanduser(path))
+    if not (path or "").strip():
+        raise ProjectError("A project needs a folder.")
+    if not (name or "").strip():
+        raise ProjectError("A project needs a name.")
+    full = os.path.abspath(os.path.expanduser(path.strip()))
     if not os.path.isdir(full):
         raise ProjectError("{0} is not a directory".format(path))
 

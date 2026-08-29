@@ -1,6 +1,9 @@
 """
 The workspace and the chat, on one port.
 
+Named `webapp` rather than `app`: the package already exports `app`, the CLI's
+Typer entry point, and `from sdk import app` would reach that instead of this.
+
 The workspace is plain standard-library HTTP and needs nothing installed. The
 chat is Chainlit, which brings FastAPI with it. When the chat extra is present
 both are served from a single origin, so a card can open a session by

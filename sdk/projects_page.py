@@ -250,13 +250,16 @@ async function openProject(id) {
 
 async function createProject(ev) {
   ev.preventDefault();
+  // Read the form before painting: painting replaces it, and reading after
+  // would submit the empty one that just replaced it.
+  const entry = {
+    name: $("f-name").value.trim(),
+    path: $("f-path").value.trim(),
+    description: $("f-desc").value.trim()
+  };
   state.error = ""; state.busy = true; paint();
   try {
-    await api("/api/projects/new", {
-      name: $("f-name").value.trim(),
-      path: $("f-path").value.trim(),
-      description: $("f-desc").value.trim()
-    });
+    await api("/api/projects/new", entry);
     state.view = "home"; state.busy = false;
     await load();
   } catch (e) {

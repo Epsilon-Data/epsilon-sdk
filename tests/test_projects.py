@@ -132,3 +132,25 @@ class TestDurability:
         projects.add("Cohort", folder)
         mode = os.stat(os.path.dirname(projects.registry_path())).st_mode
         assert mode & 0o077 == 0
+
+
+class TestRefusals:
+    """An empty field must not quietly become the working directory."""
+
+    def test_an_empty_path_is_refused(self):
+        with pytest.raises(projects.ProjectError) as exc:
+            projects.add("Cohort", "")
+        assert "needs a folder" in str(exc.value)
+
+    def test_a_whitespace_path_is_refused(self):
+        with pytest.raises(projects.ProjectError):
+            projects.add("Cohort", "   ")
+
+    def test_an_empty_name_is_refused(self, folder):
+        with pytest.raises(projects.ProjectError) as exc:
+            projects.add("  ", folder)
+        assert "needs a name" in str(exc.value)
+
+    def test_a_padded_path_still_registers(self, folder):
+        assert projects.add("Cohort", "  " + folder + "  ").path == \
+            os.path.abspath(folder)

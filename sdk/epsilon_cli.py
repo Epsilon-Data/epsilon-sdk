@@ -922,7 +922,7 @@ def start(
     except Exception as exc:
         typer.secho("Chat disabled: {0}".format(exc), fg=typer.colors.YELLOW)
 
-    from sdk import app as app_mod
+    from sdk import webapp as app_mod
     from sdk.workspace import Workspace
     space = Workspace(".", profile, session)
 
