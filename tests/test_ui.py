@@ -88,7 +88,7 @@ class TestServer:
 
     def test_serves_the_page(self, server):
         body = self._get(server + "/").read().decode()
-        assert "<title>Epsilon copilot</title>" in body
+        assert "<title>Epsilon workspace</title>" in body
 
     def test_serves_the_dataset(self, server):
         payload = json.load(self._get(server + "/api/dataset"))
@@ -128,13 +128,37 @@ class TestGuidedSteps:
     reloading, loses nothing."""
 
     def test_status_detects_a_project(self, profile, dataset_dir):
-        (dataset_dir / "project.yml").write_text("entry_point: main.py\n",
-                                                 encoding="utf-8")
-        status = status_payload(profile, str(dataset_dir))
-        assert status["hasProject"] is True
+        assert status_payload(profile, str(dataset_dir))["hasProject"] is True
 
-    def test_status_reports_no_project_before_init(self, profile, dataset_dir):
-        assert status_payload(profile, str(dataset_dir))["hasProject"] is False
+    def test_status_reports_no_project_before_init(self, dataset_dir):
+        """`epsilon start` runs before init, so a missing profile is normal."""
+        assert status_payload(None, str(dataset_dir))["hasProject"] is False
+
+    def test_the_five_setup_steps_are_reported(self, profile, dataset_dir):
+        steps = status_payload(profile, str(dataset_dir))["steps"]
+        assert [s["key"] for s in steps] == [
+            "install", "login", "datasets", "init", "model"]
+
+    def test_install_is_done_because_we_are_running(self, profile, dataset_dir):
+        steps = status_payload(profile, str(dataset_dir))["steps"]
+        assert steps[0]["done"] is True
+
+    def test_init_is_done_once_a_profile_exists(self, profile, dataset_dir):
+        by_key = {s["key"]: s for s in status_payload(profile, str(dataset_dir))["steps"]}
+        assert by_key["init"]["done"] is True
+        assert "4,000" in by_key["init"]["note"]
+
+    def test_init_is_not_done_without_one(self, dataset_dir):
+        by_key = {s["key"]: s for s in status_payload(None, str(dataset_dir))["steps"]}
+        assert by_key["init"]["done"] is False
+
+    def test_the_model_step_is_optional(self, profile, dataset_dir):
+        by_key = {s["key"]: s for s in status_payload(profile, str(dataset_dir))["steps"]}
+        assert by_key["model"]["optional"] is True
+
+    def test_every_step_carries_a_copyable_command(self, profile, dataset_dir):
+        for step in status_payload(profile, str(dataset_dir))["steps"]:
+            assert step["cmd"].strip()
 
     def test_status_lists_written_analyses(self, profile, dataset_dir):
         assert status_payload(profile, str(dataset_dir))["analyses"] == []

@@ -84,37 +84,33 @@ if __name__ == "__main__":
 
 ## Research copilot
 
-### `epsilon chat` -- the agent
+### `epsilon start` -- the workspace
 
 ```bash
-epsilon chat                                  # interactive
-epsilon chat "cross-tab gender by admission type, run it, tell me what you see"
+epsilon start
 ```
 
-The model drives. It reads the dataset card, checks what is computable, writes
-code, runs it against the synthetic data, reads the output and iterates -- you
-describe the goal, not the steps. Ten tools: `read_card`, `list_analyses`,
-`check_analysis`, `generate_analysis`, `list_files`, `read_file`, `write_file`,
-`profile_field`, `run_analysis`, `run_checks`.
+Opens a browser on `127.0.0.1:7878` with three tabs.
 
-What it *cannot* do is enforced in code, not asked for in a prompt:
+**Set up** walks the five commands, detecting each from the machine rather than
+remembering it -- run one in a terminal, reload, and it ticks. Every command has
+a copy button.
 
-- **It cannot overrule a feasibility verdict.** `check_analysis` and
-  `generate_analysis` return the matcher's answer; a blocked analysis produces
-  a refusal the agent has to relay rather than route around.
-- **It cannot read a record.** `profile_field` returns aggregates with rare
-  levels suppressed, and only when the owner set `allowAiProfiling`.
-- **It cannot leave the project directory**, or write into `generated/`.
+**Dataset** shows what you actually have: what one row is, the columns that
+reached this machine against what was stripped at projection, every column as
+measured, and the feasibility verdicts at a glance. Generate, run and check are
+buttons.
 
-That is the bargain a coding agent makes by reading a file instead of recalling
-it, and it matters more here: an analysis that is wrong for a dataset still
-runs, still clears the gate, and still comes back attested.
+**Assistant** is where the model lives. It reads the measured dataset, checks
+what is computable, writes code and runs it -- and cannot overrule a verdict,
+read a record, or leave the project directory. There is no terminal chat; the
+assistant is UI-only.
 
-Transcripts go to `.epsilon/chat/`, pinned to the card's schema hash, so how an
-analysis was shaped stays part of its record -- necessary because with your own
-API key the platform never sees these calls.
+`epsilon start` works before `epsilon init`, because guiding set-up is half its
+job. Only the Assistant tab needs a model.
 
-`epsilon chat` needs a tier-A model. Everything below works without one.
+It serves on loopback and runs beside your project, so the data and your key
+never leave the machine. Standard library only -- no node toolchain.
 
 ### The commands underneath
 
@@ -124,7 +120,7 @@ archetype-scoped projection, and the SDK measures it. There is nothing for a
 data owner to author and nothing to keep in sync.
 
 ```bash
-epsilon ui                            # all of the below, in a browser
+epsilon start                         # all of the below, in a browser
 epsilon explain                       # the dataset, and every analysis it does
                                       # and does not support
 epsilon explain --brief               # dataset only
@@ -136,31 +132,6 @@ epsilon check                         # run the submission rules locally
 
 Fields are chosen for you; `--set` overrides one, validated against what was
 measured. The command `epsilon explain` prints is the one that reproduces it.
-
-### `epsilon ui` -- the guided view
-
-```bash
-epsilon ui
-```
-
-Opens a browser and walks the workflow above as seven steps, showing where you
-are. Each step is **detected from the project**, not remembered -- do a step in
-the terminal and reload, and the page catches up.
-
-1. Sign in
-2. Start a project
-3. Understand your data -- grain, fields, what the measurement flagged
-4. Choose what to build -- available and blocked, every refusal with its reason
-5. Run it -- executes locally against synthetic data
-6. Check before submitting -- the same rules the coordinator applies
-7. Ask the copilot -- if a model is configured
-
-Steps 4, 5 and 6 are clickable: generate an analysis, run it, re-check. Steps 1
-to 6 need no model at all.
-
-It serves on loopback only and runs beside your project, so the data and your
-key never leave the machine. Standard library only -- no node toolchain, no
-network access needed.
 
 ### What is measured, and what cannot be
 
@@ -184,7 +155,7 @@ knowledge of which date starts a clock and which stops it.
 ### Feasibility is decided in code, not by a model
 
 `epsilon explain` answers from the card using ordinary Python predicates, and
-`epsilon chat` reaches those same predicates through a tool. A model never
+the assistant reaches those same predicates through a tool. A model never
 decides a verdict, only how to say it. So the answers are reproducible, and
 **every command above works with no API key at all.**
 

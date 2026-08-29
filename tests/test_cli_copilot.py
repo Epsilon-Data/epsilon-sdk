@@ -234,7 +234,13 @@ class TestCommandSurface:
         import typer
         from sdk.epsilon_cli import app
         commands = set(typer.main.get_command(app).commands)
-        assert {"explain", "snippet", "check", "chat", "ai"} <= commands
+        assert {"explain", "snippet", "check", "start", "ai"} <= commands
+
+    def test_the_assistant_is_ui_only(self):
+        """Chat lives in `epsilon start`, not in the terminal."""
+        import typer
+        from sdk.epsilon_cli import app
+        assert "chat" not in typer.main.get_command(app).commands
 
     def test_no_module_imports_the_removed_one(self):
         import pytest as _pytest

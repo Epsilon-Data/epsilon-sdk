@@ -891,87 +891,7 @@ def ai_logout():
 
 
 @app.command()
-def chat(
-        message: str = typer.Argument(
-            None, help="A single request. Omit for an interactive session."),
-        quiet: bool = typer.Option(
-            False, "--quiet", help="Hide tool activity."),
-        no_record: bool = typer.Option(
-            False, "--no-record",
-            help="Do not write a transcript to .epsilon/chat/.")
-):
-    """
-    Work with the copilot on your analysis.
-
-    The model drives: it reads the measured dataset, checks what is computable,
-    writes and runs code, and iterates. It cannot overrule a feasibility
-    verdict or read a record -- those come from tools, not from the model.
-    """
-    profile = _profile_project_or_exit()
-
-    try:
-        from sdk import llm
-        provider = llm.get_provider(llm.TIER_A, "the copilot agent")
-    except Exception as exc:
-        typer.secho(str(exc), fg=typer.colors.RED)
-        typer.echo("")
-        typer.echo("Without a model these still work, and decide the same "
-                   "things the agent would:")
-        typer.echo("  epsilon explain   epsilon snippet   epsilon check")
-        raise typer.Exit(1)
-
-    session = agent_mod.Session.create(
-        provider, profile, project_dir=".", record=not no_record)
-
-    def on_step(step):
-        if quiet:
-            return
-        if step.kind == "tool":
-            typer.secho("  * " + step.label, fg=typer.colors.BRIGHT_BLACK)
-        elif step.kind == "error":
-            typer.secho("  ! " + step.detail, fg=typer.colors.RED)
-
-    def run(text):
-        try:
-            reply = session.ask(text, on_step=on_step)
-        except KeyboardInterrupt:
-            typer.secho("\n(interrupted)", fg=typer.colors.YELLOW)
-            return
-        typer.echo("")
-        typer.echo(reply)
-        typer.echo("")
-
-    if message:
-        run(message)
-        return
-
-    from sdk.llm import config as ai_config
-    cfg = ai_config.load(include_key=False)
-    typer.secho("epsilon copilot", bold=True)
-    typer.secho("  {0} | {1} | tier {2}".format(cfg.provider, cfg.model, cfg.tier),
-                fg=typer.colors.BRIGHT_BLACK)
-    typer.secho("  {0} | synthetic data only | Ctrl-D to exit".format(
-        profile.title), fg=typer.colors.BRIGHT_BLACK)
-    if session.transcript_path:
-        typer.secho("  transcript: {0}".format(session.transcript_path),
-                    fg=typer.colors.BRIGHT_BLACK)
-    typer.echo("")
-
-    while True:
-        try:
-            text = typer.prompt("you", prompt_suffix=" > ")
-        except (EOFError, KeyboardInterrupt, typer.Abort):
-            typer.echo("")
-            return
-        if text.strip() in ("exit", "quit", "/exit", "/quit"):
-            return
-        if not text.strip():
-            continue
-        run(text)
-
-
-@app.command()
-def ui(
+def start(
         port: int = typer.Option(ui_mod.DEFAULT_PORT, help="Port to serve on."),
         no_browser: bool = typer.Option(
             False, "--no-browser", help="Do not open a browser."),
@@ -979,18 +899,23 @@ def ui(
             False, "--no-record", help="Do not write a chat transcript.")
 ):
     """
-    Open the copilot in a browser.
+    Start the Epsilon workspace in a browser.
 
-    Shows what the dataset holds and what it can and cannot answer, with chat
-    if a model is configured. Serves on loopback only -- it runs beside your
-    project, so the data and your key never leave this machine.
+    Walks setup, shows what the dataset holds and what it can and cannot
+    answer, and is where the assistant lives -- there is no terminal chat.
+    Serves on loopback only, beside your project, so the data and your key
+    never leave this machine.
     """
-    profile = _profile_project_or_exit()
+    # `start` must work before `init` -- guiding setup is half its job.
+    try:
+        profile = profile_mod.profile_project(".")
+    except profile_mod.ProfileError:
+        profile = None
 
     session = None
     try:
         from sdk import llm
-        if llm.available():
+        if profile is not None and llm.available():
             provider = llm.get_provider(llm.TIER_A, "the copilot agent")
             session = agent_mod.Session.create(
                 provider, profile, project_dir=".", record=not no_record)
@@ -1006,10 +931,11 @@ def ui(
         typer.echo("Try 'epsilon ui --port 8788'.")
         raise typer.Exit(1)
 
-    typer.secho("epsilon copilot", bold=True)
+    typer.secho("epsilon workspace", bold=True)
     typer.echo("  {0}".format(url))
     typer.secho("  {0} | {1}".format(
-        profile.title, "chat enabled" if session else "no model - panels only"),
+        profile.title if profile else "no project yet",
+        "assistant ready" if session else "assistant needs 'epsilon ai login'"),
         fg=typer.colors.BRIGHT_BLACK)
     typer.secho("  Ctrl-C to stop", fg=typer.colors.BRIGHT_BLACK)
     try:

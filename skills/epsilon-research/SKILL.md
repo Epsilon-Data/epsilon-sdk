@@ -58,7 +58,7 @@ the code is written. When you hit it:
 Any analysis you write must:
 
 - aggregate before it returns — never print, log or save an individual record
-- apply the suppression threshold to every released cell (below it, return `None`)
+- apply the suppression threshold `epsilon explain` reports (below it, return `None`)
 - state its unit of analysis in the returned object, e.g. `{"unit": "record", ...}`
 - avoid network calls, subprocesses and `eval`
 
@@ -83,6 +83,7 @@ report a figure. The real numbers only exist after the job runs in the enclave.
 | `epsilon run` | run the project entry point |
 | `epsilon check` | the submission rules, locally |
 | `epsilon build` | package for submission (runs the checks first) |
+| `epsilon start` | the browser workspace — set-up, dataset, assistant |
 
 Analyses: `describe`, `composition`, `cross_tab`, `group_compare`, `logistic`,
 `prevalence`, `survival`, `trend` — most are blocked on most archetypes, and

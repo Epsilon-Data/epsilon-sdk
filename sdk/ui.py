@@ -22,11 +22,13 @@ from sdk import catalogue as catalogue_mod
 from sdk import checks as checks_mod
 from sdk.profile import Profile
 
-DEFAULT_PORT = 8787
+DEFAULT_PORT = 7878
 
 
 def dataset_payload(profile: Profile) -> Dict[str, Any]:
     """Everything the page needs to describe the dataset."""
+    # A projection is what the researcher received: the source record had more
+    # columns and at least one identifier, none of which reach this machine.
     fields = []
     for leaf in profile.all_leaves():
         fields.append({
@@ -41,7 +43,9 @@ def dataset_payload(profile: Profile) -> Dict[str, Any]:
             "caveats": leaf.caveats,
         })
     return {
+        "ready": True,
         "title": profile.title,
+        "schemaHash": (profile.schema_hash or "")[:12] or None,
         "archetype": profile.archetype_id,
         "rows": profile.grain.rows,
         "unit": profile.grain.label,
@@ -49,6 +53,11 @@ def dataset_payload(profile: Profile) -> Dict[str, Any]:
         "minCell": profile.min_cell,
         "fields": fields,
         "notes": profile.caveats,
+        "granted": len(fields),
+        "stripped": [
+            "every direct identifier",
+            "every column outside the archetype",
+        ],
     }
 
 
@@ -81,29 +90,80 @@ def checks_payload(project_dir: str) -> Dict[str, Any]:
     }
 
 
-def status_payload(profile: Profile, project_dir: str) -> Dict[str, Any]:
-    """Where the researcher is in the workflow, read off the project.
+def status_payload(profile: Optional[Profile], project_dir: str) -> Dict[str, Any]:
+    """Where the researcher is, read off the machine and the project.
 
-    The steps mirror the README so the browser and the terminal tell the same
-    story; each one is detected rather than remembered, so closing the page or
-    doing a step in the terminal loses nothing.
+    Every step is detected rather than remembered, so doing one in the terminal
+    and reloading loses nothing, and a half-finished setup is picked up exactly
+    where it stopped.
     """
     import glob
 
-    credentials = os.path.join(
-        os.path.expanduser("~"), ".epsilon_sdk", "credentials.ini")
-    analyses = sorted(
-        os.path.basename(p) for p in
-        glob.glob(os.path.join(project_dir, "analyses", "*.py"))
-        if not os.path.basename(p).startswith("_"))
-    findings = checks_mod.check_project(project_dir)
+    home = os.path.expanduser("~")
+    credentials = os.path.join(home, ".epsilon_sdk", "credentials.ini")
+
+    model = None
+    try:
+        from sdk.llm import config as ai_config
+        cfg = ai_config.load()
+        if cfg.configured:
+            model = {"provider": cfg.provider, "model": cfg.model,
+                     "tier": cfg.tier, "source": cfg.key_source}
+    except Exception:
+        model = None
+
+    analyses = []
+    findings = []
+    if profile is not None:
+        analyses = sorted(
+            os.path.basename(f) for f in
+            glob.glob(os.path.join(project_dir, "analyses", "*.py"))
+            if not os.path.basename(f).startswith("_"))
+        findings = checks_mod.check_project(project_dir)
     blocking = [f for f in findings if f.blocking]
 
+    steps = [
+        {"key": "install", "title": "Install the SDK",
+         "cmd": "pip install 'epsilon-sdk[copilot]'",
+         "desc": "The copilot extra adds the OS keyring the assistant stores "
+                 "your model key in.",
+         "done": True,
+         "note": "Running, so it is installed."},
+        {"key": "login", "title": "Authenticate",
+         "cmd": "epsilon login",
+         "desc": "The token lands in ~/.epsilon_sdk, never in your project.",
+         "done": os.path.exists(credentials),
+         "note": "Credentials found." if os.path.exists(credentials)
+                 else "Run this in a terminal, then reload."},
+        {"key": "datasets", "title": "Find a dataset",
+         "cmd": "epsilon datasets",
+         "desc": "Lists what your access grants, with the archetype each one "
+                 "is projected through.",
+         "done": profile is not None,
+         "note": "Pick one, then initialise it."},
+        {"key": "init", "title": "Initialise the project",
+         "cmd": "epsilon init <dataset_id>",
+         "desc": "Downloads the archetype-scoped projection and the synthetic "
+                 "data, generates typed models, and pins the schema hash.",
+         "done": profile is not None,
+         "note": ("{0} rows measured.".format(format(profile.grain.rows or 0, ","))
+                  if profile else "Run this in a terminal, then reload.")},
+        {"key": "model", "title": "Point the assistant at a model",
+         "cmd": "epsilon ai login",
+         "desc": "Bring your own key. Stored in the OS keyring; calls go from "
+                 "this machine straight to the endpoint.",
+         "done": model is not None,
+         "note": ("{0} · {1}".format(model["provider"], model["model"])
+                  if model else "Only the assistant needs this. "
+                                "Everything else works without it."),
+         "optional": True},
+    ]
+
     return {
-        "signedIn": os.path.exists(credentials),
-        "hasProject": os.path.exists(os.path.join(project_dir, "project.yml")),
+        "steps": steps,
+        "hasProject": profile is not None,
+        "model": model,
         "analyses": analyses,
-        "checksRun": bool(findings) or True,
         "blocking": len(blocking),
         "warnings": len(findings) - len(blocking),
         "built": os.path.isdir(os.path.join(project_dir, "build")),
@@ -160,7 +220,7 @@ def generate(profile: Profile, project_dir: str, key: str) -> Dict[str, Any]:
             "warnings": match.warnings}
 
 
-def make_handler(profile: Profile, project_dir: str, session):
+def make_handler(profile: Optional[Profile], project_dir: str, session):
     """Build a request handler bound to one project."""
 
     class Handler(BaseHTTPRequestHandler):
@@ -185,11 +245,14 @@ def make_handler(profile: Profile, project_dir: str, session):
             if self.path in ("/", "/index.html"):
                 self._send(200, PAGE.encode("utf-8"), "text/html; charset=utf-8")
             elif self.path == "/api/dataset":
-                self._json(dataset_payload(profile))
+                self._json(dataset_payload(profile) if profile
+                           else {"ready": False})
             elif self.path == "/api/analyses":
-                self._json(analyses_payload(profile))
+                self._json(analyses_payload(profile) if profile
+                           else {"analyses": []})
             elif self.path == "/api/checks":
-                self._json(checks_payload(project_dir))
+                self._json(checks_payload(project_dir) if profile
+                           else {"summary": "", "findings": []})
             elif self.path == "/api/status":
                 self._json(status_payload(profile, project_dir))
             elif self.path == "/api/session":
@@ -239,7 +302,7 @@ def make_handler(profile: Profile, project_dir: str, session):
     return Handler
 
 
-def serve(profile: Profile, project_dir: str = ".", session=None,
+def serve(profile: Optional[Profile], project_dir: str = ".", session=None,
           port: int = DEFAULT_PORT, open_browser: bool = True):
     """Serve the interface on loopback until interrupted."""
     handler = make_handler(profile, project_dir, session)
@@ -253,7 +316,7 @@ def serve(profile: Profile, project_dir: str = ".", session=None,
 PAGE = r'''<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Epsilon copilot</title>
+<title>Epsilon workspace</title>
 <style>
 :root{
   --bg:#f5f7f6;--surface:#fff;--surface-2:#edf1ef;
@@ -274,91 +337,123 @@ PAGE = r'''<!doctype html>
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);
   font-size:15px;line-height:1.55}
-.wrap{max-width:860px;margin:0 auto;padding:0 20px 60px}
-header{padding:34px 0 18px}
-h1{margin:0;font-size:21px;letter-spacing:-.01em}
-.sub{font-family:var(--mono);font-size:11px;color:var(--ink-3);margin-top:6px}
+.wrap{max-width:900px;margin:0 auto;padding:0 20px 70px}
+header{padding:30px 0 14px;display:flex;justify-content:space-between;align-items:flex-start;gap:16px}
+h1{margin:0;font-size:20px;letter-spacing:-.01em}
+.sub{font-family:var(--mono);font-size:11px;color:var(--ink-3);margin-top:5px}
+nav{display:flex;gap:2px;background:var(--surface-2);border-radius:6px;padding:3px;
+  margin:6px 0 18px}
+nav button{flex:1;font:inherit;font-size:13px;font-weight:600;padding:7px 12px;border:0;
+  border-radius:4px;background:none;color:var(--ink-3);cursor:pointer}
+nav button.on{background:var(--surface);color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.06)}
+nav button:disabled{opacity:.4;cursor:default}
 
-.step{background:var(--surface);border:1px solid var(--rule);border-radius:6px;
-  margin-top:10px;overflow:hidden}
-.step.now{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
-.step > .head{display:flex;align-items:center;gap:12px;padding:13px 16px;cursor:pointer;
-  user-select:none}
-.step > .head:hover{background:var(--surface-2)}
-.num{width:23px;height:23px;border-radius:50%;flex:none;display:grid;place-items:center;
-  font-family:var(--mono);font-size:11px;font-weight:700;
-  background:var(--surface-2);color:var(--ink-3)}
-.step.done .num{background:var(--ok-soft);color:var(--ok)}
-.step.now .num{background:var(--accent);color:var(--bg)}
-.head h2{margin:0;font-size:15px;font-weight:600;flex:1}
-.head .hint{font-size:12.5px;color:var(--ink-3)}
-.body{padding:0 16px 16px;border-top:1px solid var(--rule)}
-.step:not(.open) .body{display:none}
+.card{background:var(--surface);border:1px solid var(--rule);border-radius:6px;
+  padding:14px 16px;margin-top:10px}
+.card.now{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+h2{font-size:13px;font-family:var(--mono);letter-spacing:.12em;text-transform:uppercase;
+  color:var(--ink-3);font-weight:500;margin:26px 0 6px}
+h3{margin:0;font-size:15px;font-weight:600}
+p{margin:0}
+.msg{font-size:12.5px;color:var(--ink-3);margin-top:6px}
+.msg.bad{color:var(--stop)}
+
+.steprow{display:flex;align-items:center;gap:11px}
+.num{width:22px;height:22px;border-radius:50%;flex:none;display:grid;place-items:center;
+  font-family:var(--mono);font-size:11px;font-weight:700;background:var(--surface-2);color:var(--ink-3)}
+.card.done .num{background:var(--ok-soft);color:var(--ok)}
+.card.now .num{background:var(--accent);color:var(--bg)}
+.tail{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--ink-3)}
+.card.done .tail{color:var(--ok)}
+
+.cmd{display:flex;align-items:center;gap:8px;margin-top:10px;background:var(--surface-2);
+  border-radius:5px;padding:8px 10px}
+.cmd code{flex:1;font-family:var(--mono);font-size:12.5px;color:var(--ink);
+  overflow-x:auto;white-space:nowrap}
+.copy{font:inherit;font-family:var(--mono);font-size:11px;padding:4px 9px;border:1px solid var(--rule);
+  border-radius:4px;background:var(--surface);color:var(--ink-2);cursor:pointer;flex:none}
+.copy:hover{border-color:var(--accent);color:var(--accent)}
+.copy.did{background:var(--ok-soft);color:var(--ok);border-color:var(--ok-soft)}
 
 .grain{background:var(--surface-2);border-left:3px solid var(--accent);border-radius:5px;
-  padding:12px 14px;margin-top:14px}
+  padding:12px 14px}
 .grain b{display:block;font-size:15px}
 .grain .n{font-family:var(--mono);font-size:12px;color:var(--ink-2)}
 .grain .no{color:var(--warn);font-family:var(--mono);font-size:12px;display:block;margin-top:5px}
 
-table{width:100%;border-collapse:collapse;font-size:13px;margin-top:12px}
+.split{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}
+.side{border-radius:5px;padding:12px 14px}
+.side.gone{background:var(--stop-soft);border:1px dashed var(--stop)}
+.side.have{background:var(--ok-soft);border:1px solid var(--rule)}
+.side h4{margin:0 0 7px;font-size:12.5px;font-family:var(--mono);letter-spacing:.06em;
+  text-transform:uppercase}
+.side.gone h4{color:var(--stop)}
+.side.have h4{color:var(--ok)}
+.side ul{margin:0;padding-left:16px;font-size:12.5px;color:var(--ink-2)}
+.side .cols{font-family:var(--mono);font-size:11.5px;color:var(--ink-2);line-height:1.7}
+
+table{width:100%;border-collapse:collapse;font-size:13px;margin-top:10px}
 th{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;
-  color:var(--ink-3);font-weight:500;text-align:left;padding:7px 10px;
-  background:var(--surface-2);border-radius:3px}
+  color:var(--ink-3);font-weight:500;text-align:left;padding:7px 10px;background:var(--surface-2)}
 td{padding:7px 10px;border-top:1px solid var(--rule);color:var(--ink-2)}
 td.p{font-family:var(--mono);font-size:12px;color:var(--ink)}
 td .cav{color:var(--warn);font-size:11.5px;display:block;margin-top:2px}
 
-.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(238px,1fr));gap:9px;margin-top:12px}
-.card{border:1px solid var(--rule);border-radius:5px;padding:11px 13px;background:var(--bg)}
-.card.no{border-style:dashed;opacity:.85}
-.card h3{margin:0 0 5px;font-size:13.5px;display:flex;justify-content:space-between;gap:8px;
-  align-items:center}
-.card p{margin:0;font-size:12px;color:var(--ink-3);line-height:1.45}
-.card p.why{color:var(--stop)}
-.card .unlock{font-size:11.5px;color:var(--ink-3);margin-top:6px;display:block}
-.chip{font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;
-  padding:2px 6px;border-radius:3px;white-space:nowrap}
-.chip.ok{background:var(--ok-soft);color:var(--ok)}
-.chip.no{background:var(--stop-soft);color:var(--stop)}
-.chip.det{background:var(--accent-soft);color:var(--accent)}
-.chip.agg{background:var(--warn-soft);color:var(--warn)}
-
-button{font:inherit;font-size:13px;font-weight:600;padding:7px 13px;border:1px solid var(--rule);
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.chip{font-family:var(--mono);font-size:11px;padding:4px 9px;border-radius:4px}
+.chip.y{background:var(--ok-soft);color:var(--ok)}
+.chip.n{background:var(--stop-soft);color:var(--stop)}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:9px;margin-top:10px}
+.acard{border:1px solid var(--rule);border-radius:5px;padding:11px 13px;background:var(--bg)}
+.acard.no{border-style:dashed;opacity:.9}
+.acard h3{font-size:13.5px;display:flex;justify-content:space-between;gap:8px;align-items:center}
+.acard p{font-size:12px;color:var(--ink-3);line-height:1.45;margin-top:4px}
+.acard p.why{color:var(--stop)}
+.acard .unlock{font-size:11.5px;color:var(--ink-3);margin-top:6px;display:block}
+button.go{font:inherit;font-size:13px;font-weight:600;padding:7px 13px;border:1px solid var(--accent);
+  border-radius:5px;background:var(--accent);color:var(--bg);cursor:pointer}
+button.plain{font:inherit;font-size:13px;font-weight:600;padding:7px 13px;border:1px solid var(--rule);
   border-radius:5px;background:var(--surface);color:var(--ink);cursor:pointer}
-button.go{background:var(--accent);border-color:var(--accent);color:var(--bg)}
-button:disabled{opacity:.5;cursor:default}
-.card button{margin-top:9px;width:100%}
-.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px}
+.acard button{margin-top:9px;width:100%}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px}
 select{font:inherit;font-size:13px;padding:7px 10px;border:1px solid var(--rule);
   border-radius:5px;background:var(--bg);color:var(--ink)}
 pre{background:var(--surface-2);border-radius:5px;padding:11px 13px;overflow-x:auto;
-  font-family:var(--mono);font-size:11.5px;color:var(--ink-2);margin:12px 0 0;
-  max-height:320px;white-space:pre-wrap}
-.diag{font-family:var(--mono);font-size:12px;margin-top:12px}
+  font-family:var(--mono);font-size:11.5px;color:var(--ink-2);margin:10px 0 0;
+  max-height:300px;white-space:pre-wrap;position:relative}
+.diag{font-family:var(--mono);font-size:12px;margin-top:10px}
 .diag div{padding:3px 0}
-.diag .b{color:var(--stop)}
-.diag .w{color:var(--warn)}
-.diag .g{color:var(--ok)}
-.msg{font-size:12.5px;color:var(--ink-3);margin-top:10px}
-.msg.bad{color:var(--stop)}
+.diag .b{color:var(--stop)} .diag .w{color:var(--warn)} .diag .g{color:var(--ok)}
 
-#log{max-height:40vh;overflow-y:auto}
+#log{max-height:44vh;overflow-y:auto}
 .turn{padding:9px 0;border-top:1px solid var(--rule)}
 .turn:first-child{border-top:0}
 .who{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;
   color:var(--ink-3);margin-bottom:4px}
-.turn pre{background:none;padding:0;margin:0;font-family:var(--sans);font-size:13.5px;
-  color:var(--ink-2);max-height:none}
+.turn .t{white-space:pre-wrap;font-size:13.5px;color:var(--ink-2)}
 .steps{font-family:var(--mono);font-size:11px;color:var(--ink-3);margin-bottom:5px}
-form{display:flex;gap:8px;margin-top:12px}
+form{display:flex;gap:8px;margin-top:10px}
 input{flex:1;font:inherit;font-size:13.5px;padding:8px 11px;border:1px solid var(--rule);
   border-radius:5px;background:var(--bg);color:var(--ink)}
 input:focus{outline:2px solid var(--accent);outline-offset:-1px}
+.try{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}
+.try button{font:inherit;font-size:12px;padding:5px 10px;border:1px solid var(--rule);
+  border-radius:20px;background:var(--surface);color:var(--ink-2);cursor:pointer}
+.try button:hover{border-color:var(--accent);color:var(--accent)}
+.lock{text-align:center;padding:26px 16px;color:var(--ink-3)}
+.lock b{display:block;color:var(--ink);font-size:15px;margin-bottom:6px}
+@media(max-width:640px){.split{grid-template-columns:1fr}}
 </style></head><body>
 <div class="wrap">
-  <header><h1 id="title">Loading…</h1><div class="sub" id="sub"></div></header>
-  <div id="steps"></div>
+  <header>
+    <div><h1 id="title">Epsilon workspace</h1><div class="sub" id="sub"></div></div>
+  </header>
+  <nav>
+    <button id="n0" class="on" onclick="go(0)">Set up</button>
+    <button id="n1" onclick="go(1)">Dataset</button>
+    <button id="n2" onclick="go(2)">Assistant</button>
+  </nav>
+  <div id="view"></div>
 </div>
 
 <script>
@@ -369,179 +464,226 @@ const j = async (p, body) => (await fetch(p, body ? {
   method:"POST", headers:{"Content-Type":"application/json"},
   body: JSON.stringify(body)} : undefined)).json();
 
-let D, A, S, HAS_CHAT = false;
+let D = {ready:false}, A = [], S = {steps:[]}, TAB = 0;
 
-function step(n, id, title, hint, state, body){
-  return '<section class="step ' + state + (state === "now" ? " open" : "") +
-    '" id="s' + id + '"><div class="head" onclick="this.parentNode.classList.toggle(\'open\')">' +
-    '<span class="num">' + (state === "done" ? "✓" : n) + '</span>' +
-    '<h2>' + title + '</h2><span class="hint">' + hint + '</span></div>' +
-    '<div class="body">' + body + '</div></section>';
+window.copy = (btn, text) => {
+  navigator.clipboard.writeText(text).then(() => {
+    const was = btn.textContent;
+    btn.textContent = "copied"; btn.classList.add("did");
+    setTimeout(() => { btn.textContent = was; btn.classList.remove("did"); }, 1200);
+  });
+};
+
+const cmdBox = text =>
+  '<div class="cmd"><code>' + esc(text) + '</code>' +
+  '<button class="copy" onclick="copy(this, ' + JSON.stringify(text)
+    .replace(/"/g, "&quot;") + ')">copy</button></div>';
+
+function setup(){
+  let firstOpen = false;
+  return S.steps.map((s, i) => {
+    const isNow = !s.done && !firstOpen && (firstOpen = true);
+    return '<div class="card ' + (s.done ? "done" : isNow ? "now" : "") + '">' +
+      '<div class="steprow"><span class="num">' + (s.done ? "✓" : i + 1) + '</span>' +
+      '<h3>' + esc(s.title) + '</h3><span class="tail">' +
+      (s.done ? "done" : s.optional ? "optional" : "") + '</span></div>' +
+      '<p class="msg">' + esc(s.desc) + '</p>' +
+      cmdBox(s.cmd) +
+      '<p class="msg">' + esc(s.note) + '</p></div>';
+  }).join("") +
+  (D.ready ? '<div class="card"><p class="msg">Project is ready. ' +
+    '<b>Dataset</b> shows what you have; <b>Assistant</b> answers questions about it.</p>' +
+    '<div class="row"><button class="go" onclick="go(1)">See the dataset →</button></div></div>' : "");
 }
 
-function fieldsTable(){
-  return '<table><thead><tr><th>Field</th><th>Values</th><th>Access</th><th>Coverage</th>' +
-    '</tr></thead><tbody>' + D.fields.map(f => {
-      let v = f.type;
-      if (f.range) v = f.type + " " + f.range[0] + "–" + f.range[1];
-      else if (f.categories.length) v = f.categories.join(", ") +
-        (f.cardinality > f.categories.length ? ", …" : "");
-      else if (f.cardinality) v = f.type + " (" + f.cardinality.toLocaleString() + ")";
-      const chip = f.access === "DETAILED"
-        ? '<span class="chip det">detailed</span>'
-        : '<span class="chip agg">' + esc((f.releasableAs || []).join(" · ") || "aggregate") + '</span>';
-      return '<tr><td class="p">' + esc(f.path) + '</td><td>' + esc(v) +
-        (f.caveats.length ? '<span class="cav">! ' + esc(f.caveats[0]) + '</span>' : '') +
-        '</td><td>' + chip + '</td><td>' +
-        (f.coverage == null ? "—" : Math.round(f.coverage * 100) + "%") + '</td></tr>';
-    }).join("") + '</tbody></table>';
+function dataset(){
+  if (!D.ready)
+    return '<div class="card"><p class="msg">No project yet. Finish set-up first.</p></div>';
+  const fields = D.fields.map(f => {
+    let v = f.type;
+    if (f.range) v = f.type + " " + f.range[0] + "–" + f.range[1];
+    else if (f.categories.length) v = f.categories.join(", ") +
+      (f.cardinality > f.categories.length ? ", …" : "");
+    else if (f.cardinality) v = f.type + " (" + f.cardinality.toLocaleString() + ")";
+    const chip = f.access === "DETAILED" ? "detailed"
+      : ((f.releasableAs || []).join(" · ") || "aggregate");
+    return '<tr><td class="p">' + esc(f.path) + '</td><td>' + esc(v) +
+      (f.caveats.length ? '<span class="cav">! ' + esc(f.caveats[0]) + '</span>' : '') +
+      '</td><td>' + esc(chip) + '</td><td>' +
+      (f.coverage == null ? "—" : Math.round(f.coverage * 100) + "%") + '</td></tr>';
+  }).join("");
+
+  return '<div class="card"><div class="grain"><b>One row is a ' + esc(D.unit) + '</b>' +
+    '<span class="n">' + (D.rows != null ? D.rows.toLocaleString() + " rows" : "") + '</span>' +
+    (D.hasEntityKey ? "" : '<span class="no">No key groups rows back to a person or case — ' +
+      'per-entity figures are not computable</span>') + '</div></div>' +
+
+    '<h2>What you actually have</h2>' +
+    '<div class="split">' +
+      '<div class="side gone"><h4>Never reached this machine</h4><ul>' +
+        D.stripped.map(x => '<li>' + esc(x) + '</li>').join("") +
+      '</ul></div>' +
+      '<div class="side have"><h4>Projection you received — ' + D.granted + ' columns</h4>' +
+        '<div class="cols">' + D.fields.map(f => esc(f.path)).join("<br>") + '</div></div>' +
+    '</div>' +
+    '<p class="msg">The source record is projected down to the columns your archetype ' +
+    'grants. Everything below was counted from that projection by <code>epsilon init</code> ' +
+    '— nothing was authored by hand, so nothing can drift out of sync with the data.</p>' +
+
+    '<h2>Granted columns, as measured</h2>' +
+    '<div class="card"><table><thead><tr><th>Column</th><th>Measured</th>' +
+    '<th>Access</th><th>Coverage</th></tr></thead><tbody>' + fields + '</tbody></table></div>' +
+    (D.notes.length ? '<p class="msg">' + esc(D.notes[0]) + '</p>' : "") +
+
+    '<h2>Feasibility — decided in code</h2>' +
+    '<div class="chips">' + A.map(m =>
+      '<span class="chip ' + (m.status === "FEASIBLE" ? "y" : "n") + '">' +
+      (m.status === "FEASIBLE" ? "yes" : "no") + "  " + esc(m.key) + '</span>').join("") +
+    '</div>' +
+    '<p class="msg">Answered by <code>epsilon explain</code> from ordinary Python ' +
+    'predicates. The assistant reaches the same predicates through a tool — it cannot ' +
+    'overrule one.</p>' +
+
+    '<h2>What you can build</h2>' + cards() +
+    '<h2>Run and check</h2>' + runCheck();
 }
 
-function analysisCards(){
-  const card = m => '<div class="card' + (m.status === "FEASIBLE" ? '' : ' no') + '">' +
-    '<h3>' + esc(m.title) + '<span class="chip ' +
-      (m.status === "FEASIBLE" ? 'ok">available' : 'no">blocked') + '</span></h3>' +
+function cards(){
+  const card = m => '<div class="acard' + (m.status === "FEASIBLE" ? '' : ' no') + '">' +
+    '<h3>' + esc(m.title) + '</h3>' +
     (m.status === "FEASIBLE"
-      ? '<p>' + esc(m.summary) + '</p><button class="go" onclick="gen(\'' + m.key +
-        '\')">Generate code</button>'
+      ? '<p>' + esc(m.summary) + '</p>' +
+        '<button class="go" onclick="gen(\'' + m.key + '\')">Generate code</button>'
       : '<p class="why">' + esc(m.blockers[0] || "") + '</p>' +
         (m.unlock ? '<span class="unlock">' + esc(m.unlock) + '</span>' : '')) + '</div>';
-  const ok = A.filter(m => m.status === "FEASIBLE");
-  const no = A.filter(m => m.status !== "FEASIBLE");
-  return '<p class="msg">' + ok.length + ' available, ' + no.length +
-    ' not possible with this dataset. Every refusal says why.</p>' +
-    '<div class="cards">' + ok.map(card).join("") + no.map(card).join("") + '</div>' +
-    '<div id="genmsg"></div>';
+  return '<div class="cards">' +
+    A.filter(m => m.status === "FEASIBLE").map(card).join("") +
+    A.filter(m => m.status !== "FEASIBLE").map(card).join("") +
+    '</div><div id="genmsg"></div>';
 }
 
-function runPanel(){
-  if (!S.analyses.length)
-    return '<p class="msg">Generate an analysis in step 4 first.</p>';
-  return '<div class="row"><select id="mod">' +
-    S.analyses.map(m => '<option>' + esc(m) + '</option>').join("") +
-    '</select><button class="go" onclick="runIt()">Run on synthetic data</button></div>' +
-    '<p class="msg">Runs locally against generated/data.csv. These are not results.</p>' +
-    '<div id="runout"></div>';
+function runCheck(){
+  const run = S.analyses.length
+    ? '<div class="row"><select id="mod">' +
+      S.analyses.map(m => '<option>' + esc(m) + '</option>').join("") +
+      '</select><button class="go" onclick="runIt()">Run on synthetic data</button>' +
+      '<button class="plain" onclick="recheck()">Check</button></div>' +
+      '<p class="msg">Runs locally against generated/data.csv. These are not results.</p>'
+    : '<p class="msg">Generate an analysis above, then run it here.</p>';
+  const state = S.blocking
+    ? '<div class="diag"><div class="b">' + S.blocking + ' blocking issue' +
+      (S.blocking === 1 ? '' : 's') + ' — this would not pass the gate</div></div>'
+    : '<div class="diag"><div class="g">✓ checks passing</div></div>';
+  return '<div class="card">' + run + state + '<div id="out"></div></div>';
 }
 
-function checkPanel(){
-  const f = S.blocking, w = S.warnings;
-  let head = f ? '<div class="diag"><div class="b">' + f + ' blocking issue' +
-      (f === 1 ? '' : 's') + ' — this would not pass the gate</div></div>'
-    : '<div class="diag"><div class="g">✓ All checks passed</div></div>';
-  return head + '<div class="row"><button onclick="recheck()">Re-check</button></div>' +
-    '<div id="chkout"></div>';
+const TRY = ["What can I compute with this dataset?",
+             "Why can't I compute prevalence?",
+             "Cross-tab the two categorical columns and run it"];
+
+function assistant(){
+  if (!D.ready)
+    return '<div class="card"><div class="lock"><b>No project yet</b>' +
+      'The assistant only answers about a dataset already initialised here. ' +
+      'Finish set-up first.</div></div>';
+  if (!S.model)
+    return '<div class="card"><div class="lock"><b>Assistant needs a model</b>' +
+      'Run <code>epsilon ai login</code> and reload. Your key stays in this ' +
+      'machine\'s keyring and calls go straight to the endpoint — Epsilon never ' +
+      'sees a prompt.</div>' + cmdBox("epsilon ai login") + '</div>';
+  return '<div class="card"><p class="msg">' + esc(S.model.provider) + ' · ' +
+    esc(S.model.model) + ' · key via ' + esc(S.model.source) +
+    '<br>Transcript saved to .epsilon/chat/' +
+    (D.schemaHash ? ', pinned to schema ' + esc(D.schemaHash) : '') + '</p>' +
+    '<div id="log"></div>' +
+    '<form id="f"><input id="q" autocomplete="off" ' +
+    'placeholder="Ask anything about this dataset…"><button class="go">Ask</button></form>' +
+    '<div class="try">' + TRY.map(t =>
+      '<button onclick="ask2(' + JSON.stringify(t).replace(/"/g,"&quot;") +
+      ')">' + esc(t) + '</button>').join("") + '</div></div>';
 }
 
-function chatPanel(){
-  if (!HAS_CHAT)
-    return '<p class="msg">No model configured. Run <code>epsilon ai login</code> ' +
-      'in the terminal, then reload. Everything above works without one.</p>';
-  return '<div id="log"></div><form id="f"><input id="q" autocomplete="off" ' +
-    'placeholder="Ask anything about this dataset…"><button class="go">Ask</button></form>';
-}
-
-async function render(){
-  const current =
-    !S.hasProject ? 2 : !S.analyses.length ? 4 : S.blocking ? 6 : 7;
-  const st = n => n < current ? "done" : n === current ? "now" : "todo";
-
-  $("#steps").innerHTML =
-    step(1, 1, "Sign in", S.signedIn ? "done" : "epsilon login",
-      S.signedIn ? "done" : "now",
-      '<p class="msg">' + (S.signedIn
-        ? "Credentials found in ~/.epsilon_sdk."
-        : "Run <code>epsilon login</code> in the terminal, then reload.") + '</p>') +
-    step(2, 2, "Start a project", S.hasProject ? "done" : "epsilon init",
-      S.hasProject ? "done" : "now",
-      '<p class="msg">' + (S.hasProject
-        ? "project.yml and the archetype-scoped projection are in place."
-        : "Run <code>epsilon init &lt;dataset_id&gt;</code>, then reload.") + '</p>') +
-    step(3, 3, "Understand your data", D.rows ? D.rows.toLocaleString() + " rows" : "",
-      st(3),
-      '<div class="grain"><b>One row is a ' + esc(D.unit) + '</b>' +
-      '<span class="n">' + (D.rows != null ? D.rows.toLocaleString() + " rows" : "") + '</span>' +
-      (D.hasEntityKey ? "" : '<span class="no">No key groups rows back to a person or ' +
-        'case — per-entity figures are not computable</span>') + '</div>' +
-      fieldsTable() +
-      (D.notes.length ? '<p class="msg">' + esc(D.notes[0]) + '</p>' : '')) +
-    step(4, 4, "Choose what to build",
-      A.filter(m => m.status === "FEASIBLE").length + " available", st(4),
-      analysisCards()) +
-    step(5, 5, "Run it",
-      S.analyses.length ? S.analyses.length + " written" : "nothing yet", st(5),
-      runPanel()) +
-    step(6, 6, "Check before submitting",
-      S.blocking ? S.blocking + " blocking" : "passing", st(6), checkPanel()) +
-    step(7, 7, "Ask the copilot", HAS_CHAT ? "" : "no model", st(7), chatPanel());
-
+function render(){
+  ["n0","n1","n2"].forEach((id, i) => {
+    const b = $("#" + id);
+    b.className = i === TAB ? "on" : "";
+    b.disabled = i > 0 && !D.ready;
+  });
+  $("#view").innerHTML = [setup, dataset, assistant][TAB]();
   const f = $("#f");
-  if (f) f.addEventListener("submit", ask);
+  if (f) f.addEventListener("submit", e => { e.preventDefault(); ask2($("#q").value); });
 }
 
-async function refresh(){ S = await j("/api/status"); await render(); }
+window.go = t => { TAB = t; render(); };
+
+async function refresh(){
+  S = await j("/api/status");
+  D = await j("/api/dataset");
+  A = D.ready ? (await j("/api/analyses")).analyses : [];
+  $("#title").textContent = D.ready ? D.title : "Epsilon workspace";
+  $("#sub").textContent = D.ready
+    ? [D.archetype && "archetype " + D.archetype,
+       D.rows != null && D.rows.toLocaleString() + " rows",
+       "suppression n < " + D.minCell].filter(Boolean).join("  ·  ")
+    : "127.0.0.1 · loopback · nothing leaves this machine";
+  render();
+}
 
 window.gen = async key => {
   const r = await j("/api/generate", {analysis:key});
   $("#genmsg").innerHTML = r.ok
-    ? '<p class="msg">Wrote <code>' + esc(r.path) + '</code>. Step 5 can run it.</p>'
+    ? '<p class="msg">Wrote <code>' + esc(r.path) + '</code></p>'
     : '<p class="msg bad">' + esc(r.message) + '</p>';
-  if (r.ok) await refresh();
+  if (r.ok) { await refresh(); }
 };
 
 window.runIt = async () => {
   const m = $("#mod").value;
-  $("#runout").innerHTML = '<p class="msg">Running…</p>';
+  $("#out").innerHTML = '<p class="msg">Running…</p>';
   const r = await j("/api/run", {module:m});
-  $("#runout").innerHTML = '<pre>' + esc(r.output) + '</pre>' +
+  $("#out").innerHTML = '<pre>' + esc(r.output) + '</pre>' +
+    '<div class="row"><button class="copy" onclick="copy(this, ' +
+    JSON.stringify(r.output).replace(/"/g,"&quot;") + ')">copy output</button></div>' +
     '<p class="msg">Synthetic data — these are not results.</p>';
 };
 
 window.recheck = async () => {
   const r = await j("/api/checks");
-  $("#chkout").innerHTML = r.findings.length
+  $("#out").innerHTML = r.findings.length
     ? '<div class="diag">' + r.findings.map(f =>
         '<div class="' + (f.level === "BLOCK" ? "b" : "w") + '">' + f.level + "  " +
         esc(f.path) + (f.line ? ":" + f.line : "") + "  " + esc(f.message) +
-        (f.fix ? '<br>&nbsp;&nbsp;&nbsp;→ ' + esc(f.fix) : "") + '</div>').join("") +
-      '</div>'
+        (f.fix ? '<br>&nbsp;&nbsp;&nbsp;→ ' + esc(f.fix) : "") + '</div>').join("") + '</div>'
     : '<div class="diag"><div class="g">✓ All checks passed</div></div>';
   await refresh();
 };
 
-async function ask(e){
-  e.preventDefault();
-  const q = $("#q").value.trim();
+window.ask2 = async text => {
+  const q = (text || "").trim();
   if (!q) return;
-  $("#q").value = "";
+  if (TAB !== 2) { TAB = 2; render(); }
+  if ($("#q")) $("#q").value = "";
   add("you", esc(q));
   const pending = add("copilot", "…");
   const r = await j("/api/chat", {message:q});
-  pending.innerHTML = '<div class="who">copilot</div>' +
+  pending.innerHTML = '<div class="who">assistant</div>' +
     (r.steps && r.steps.length
       ? '<div class="steps">' + r.steps.map(s => "· " + esc(s.label)).join("<br>") + '</div>'
-      : '') + '<pre>' + esc(r.reply || r.error) + '</pre>';
-  await refresh();
-}
+      : '') + '<div class="t">' + esc(r.reply || r.error) + '</div>' +
+    '<div class="row"><button class="copy" onclick="copy(this, ' +
+    JSON.stringify(r.reply || "").replace(/"/g,"&quot;") + ')">copy</button></div>';
+  S = await j("/api/status");
+};
 
 function add(who, html){
   const el = document.createElement("div");
   el.className = "turn";
-  el.innerHTML = '<div class="who">' + who + '</div><pre>' + html + '</pre>';
+  el.innerHTML = '<div class="who">' + who + '</div><div class="t">' + html + '</div>';
   $("#log").appendChild(el);
   $("#log").scrollTop = $("#log").scrollHeight;
   return el;
 }
 
-(async () => {
-  D = await j("/api/dataset");
-  A = (await j("/api/analyses")).analyses;
-  HAS_CHAT = (await j("/api/session")).chat;
-  $("#title").textContent = D.title;
-  $("#sub").textContent = [D.archetype && "archetype " + D.archetype,
-    D.rows != null && D.rows.toLocaleString() + " rows",
-    "suppression n<" + D.minCell].filter(Boolean).join("  ·  ");
-  await refresh();
-})();
+refresh();
 </script></body></html>
 '''
