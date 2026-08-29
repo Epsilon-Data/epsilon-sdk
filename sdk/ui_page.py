@@ -893,6 +893,13 @@ class App {
   }
 
   paint(){
+    // The whole tree is re-rendered, so anything half-typed has to be carried
+    // across or a reply would wipe the box mid-sentence.
+    const prev = document.getElementById("ask");
+    const carry = prev
+      ? { value: prev.value, focused: document.activeElement === prev }
+      : null;
+
     const vals = this.renderVals();
     const root = document.getElementById("root");
     for (const k of Object.keys(HANDLERS)) delete HANDLERS[k];
@@ -901,12 +908,21 @@ class App {
       const fn = HANDLERS[el.getAttribute("data-h")];
       if (fn) el.addEventListener("click", ev => { ev.preventDefault(); fn(); });
     });
-    const input = root.querySelector("input");
-    if (input) {
-      input.addEventListener("keydown", ev => {
-        if (ev.key === "Enter") { const v = input.value; input.value = ""; this.send(v); }
-      });
-      if (this.state.view === "chat") input.focus();
+
+    const input = document.getElementById("ask");
+    if (!input) return;
+    if (carry) input.value = carry.value;
+    input.addEventListener("keydown", ev => {
+      if (ev.key !== "Enter" || ev.isComposing) return;
+      ev.preventDefault();
+      const text = input.value;
+      input.value = "";
+      this.send(text);
+    });
+    if (this.state.view === "chat" && (!carry || carry.focused)) {
+      input.focus();
+      const end = input.value.length;
+      try { input.setSelectionRange(end, end); } catch (e) { /* not selectable */ }
     }
   }
 }
@@ -980,6 +996,16 @@ App.prototype.localise = function(v){
     v.lockBody = "The assistant only answers about a dataset already "
       + "initialised here. Finish set-up first.";
   }
+
+  v.chips = (d.ready && !this.turns.length) ? [
+    { label: "What can I compute with this dataset?",
+      send: () => this.send("What can I compute with this dataset, and what can't I?") },
+    { label: "Why is prevalence blocked?",
+      send: () => this.send("Why is prevalence blocked here, and what would unlock it?") },
+    { label: "Cross-tab two columns and run it",
+      send: () => this.send("Cross-tab two categorical columns, generate the code and run it.") }
+  ] : [];
+  v.hasChips = v.chips.length > 0;
 
   if (!this.turns.length && d.ready) {
     v.messages = [{ isUser: false, isBot: true, blocks: [

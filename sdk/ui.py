@@ -329,10 +329,7 @@ def build_page() -> str:
         "family=IBM+Plex+Mono:wght@400;500;600&display=swap\">\n"
         "<style>" + ui_page.STYLE + "</style>\n"
         "</head><body><div id=\"root\"></div>\n<script>\n"
-        # One count is written into the design copy; make it follow the data.
-        "const MARKUP = " + _js_string(ui_page.MARKUP.replace(
-            "Projection you received &mdash; 10 columns",
-            "Projection you received &mdash; {{ grantedCount }} columns")) + ";\n"
+        "const MARKUP = " + _js_string(_livewire(ui_page.MARKUP)) + ";\n"
         # renderVals is authored as a method; make it a function expression
         # so it can be attached to the runtime's prototype unchanged.
         "const RENDER_VALS_FN = " + _strip_fixtures(
@@ -362,6 +359,29 @@ def _strip_fixtures(js: str) -> str:
     js = _re.sub(r"'[^']*(?:nordic-icu-2019|icu_encounter_v3|41,208)[^']*'",
                  "''", js)
     return js
+
+
+# The canvas is a mockup: its chat box is a styled div showing placeholder
+# text, because a design does not need to accept typing. These substitutions
+# make the decorative parts real while leaving every surrounding style intact.
+_LIVE = [
+    ("Projection you received &mdash; 10 columns",
+     "Projection you received &mdash; {{ grantedCount }} columns"),
+    ('<div style="flex: 1; font-size: 13.5px; color: #a8a39a;">{{ inputHint }}</div>',
+     '<input id="ask" placeholder="{{ inputHint }}" autocomplete="off" '
+     'style="flex: 1; font-family: inherit; font-size: 13.5px; border: 0; '
+     'outline: none; background: transparent; color: #33302b;">'),
+]
+
+
+def _livewire(markup: str) -> str:
+    for old, new in _LIVE:
+        if old not in markup:
+            raise RuntimeError(
+                "the design changed and this substitution no longer applies: "
+                + old[:60])
+        markup = markup.replace(old, new)
+    return markup
 
 
 def _js_string(text: str) -> str:

@@ -260,3 +260,35 @@ class TestDesignFidelity:
         for fixture in ("nordic-icu-2019", "icu_encounter_v3", "41,208",
                         "r.halvorsen@ki.se", "mrn", "clinician_id"):
             assert fixture not in PAGE, fixture
+
+
+class TestTheMockupsDecorativeParts:
+    """The canvas is a design: its chat box is a styled div and its suggestion
+    chips reveal canned turns. Both have to become real without disturbing the
+    surrounding styles."""
+
+    def test_the_chat_box_is_a_real_input(self):
+        from sdk.ui import PAGE
+        assert 'id=\\"ask\\"' in PAGE
+        assert "placeholder=" in PAGE
+
+    def test_the_placeholder_still_comes_from_the_design(self):
+        from sdk.ui import PAGE
+        assert "{{ inputHint }}" in PAGE
+
+    def test_a_design_change_fails_loudly_rather_than_silently(self):
+        """If the canvas is re-exported and the substitution target moves, the
+        build must stop -- not ship a page with no way to type."""
+        import pytest as _pytest
+
+        from sdk.ui import _livewire
+        with _pytest.raises(RuntimeError) as exc:
+            _livewire("<div>a design that changed</div>")
+        assert "no longer applies" in str(exc.value)
+
+    def test_typed_text_survives_a_rerender(self):
+        """The whole tree is replaced on every state change, so a reply
+        arriving mid-sentence must not wipe the box."""
+        from sdk import ui_page
+        assert "carry" in ui_page.RUNTIME
+        assert "document.activeElement" in ui_page.RUNTIME
