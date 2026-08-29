@@ -43,11 +43,15 @@ def _seed_token() -> str:
     referrer of the handshake. Browsers may trim it; `take_seed` falls back to
     the most recent unclaimed card when it does.
     """
+    return workspace_mod.token_from_referrer(_referrer())
+
+
+def _referrer() -> str:
     try:
         environ = cl.context.session.environ or {}
     except Exception:
         return ""
-    return workspace_mod.token_from_referrer(environ.get("HTTP_REFERER") or "")
+    return environ.get("HTTP_REFERER") or ""
 
 
 def _greeting(profile: Profile) -> str:
@@ -99,6 +103,16 @@ async def start():
         seed = None
 
     directory = seed.project_dir if seed else PROJECT_DIR
+    if seed is None:
+        # /chat?p=<id>: the workspace's Assistant screen says which project.
+        try:
+            from sdk import projects as registry
+            named = registry.get(workspace_mod.param_from_referrer(
+                _referrer(), "p"))
+            if named is not None:
+                directory = named.path
+        except Exception:
+            pass
     profile = _load(directory)
     if profile is None:
         await cl.Message(content=(

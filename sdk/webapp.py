@@ -87,7 +87,15 @@ def build(space: Workspace):
 
     @app.get("/api/session")
     async def session():
-        return {"chat": space.chat() is not None}
+        return {"chat": True, "chainlit": True}
+
+    @app.get("/assistant")
+    async def assistant():
+        """The workspace's Assistant screen: the Chainlit chat, told which
+        project it is about."""
+        if space.project is not None:
+            return RedirectResponse("/chat?p=" + space.project.id)
+        return RedirectResponse("/chat")
 
     @app.get("/api/projects")
     async def projects():

@@ -385,7 +385,8 @@ def make_handler(space):
             elif path == "/api/status":
                 self._json(status_payload(space.profile, space.project_dir))
             elif path == "/api/session":
-                self._json({"chat": space.chat() is not None})
+                self._json({"chat": space.chat() is not None,
+                            "chainlit": False})
             elif path == "/api/projects":
                 self._json(projects_payload(space))
             elif path == "/api/cards":

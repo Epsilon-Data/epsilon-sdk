@@ -264,3 +264,14 @@ class TestChatSession:
                              session=object())
         space.open("cohort")
         assert space.session is None
+
+
+class TestReferrerParams:
+    def test_reads_any_named_parameter(self):
+        url = "http://x/chat?p=diabetes-risk-factors&seed=abc"
+        assert ws.param_from_referrer(url, "p") == "diabetes-risk-factors"
+        assert ws.param_from_referrer(url, "seed") == "abc"
+
+    def test_a_missing_parameter_yields_nothing(self):
+        assert ws.param_from_referrer("http://x/chat", "p") == ""
+        assert ws.param_from_referrer("", "p") == ""

@@ -75,21 +75,26 @@ class Seed:
                    created=float(raw.get("created") or 0))
 
 
-def token_from_referrer(referrer: str) -> str:
-    """Pull the seed token out of the page URL that opened a session.
+def param_from_referrer(referrer: str, name: str) -> str:
+    """Pull one query parameter out of the page URL that opened a session.
 
     Chainlit talks over a socket, so the page URL reaches the app only as the
     referrer of the handshake, and a browser is free to trim it. Returning ""
-    is normal, not an error -- the caller falls back to the newest seed.
+    is normal, not an error.
     """
     from urllib.parse import parse_qs, urlparse
 
-    if not referrer or "seed=" not in referrer:
+    if not referrer or name + "=" not in referrer:
         return ""
     try:
-        return (parse_qs(urlparse(referrer).query).get("seed") or [""])[0]
+        return (parse_qs(urlparse(referrer).query).get(name) or [""])[0]
     except ValueError:
         return ""
+
+
+def token_from_referrer(referrer: str) -> str:
+    """The seed token in the URL, when it survived the trip."""
+    return param_from_referrer(referrer, "seed")
 
 
 def seed_dir() -> str:

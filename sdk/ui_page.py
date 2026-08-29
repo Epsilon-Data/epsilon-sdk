@@ -913,6 +913,7 @@ class App {
   async load(){
     const j = async p => (await fetch(p)).json();
     this.api.status = await j("/api/status");
+    this.api.session = await j("/api/session");
     this.api.dataset = await j("/api/dataset");
     this.api.analyses = this.api.dataset.ready ? (await j("/api/analyses")).analyses : [];
     const s = this.api.status;
@@ -977,7 +978,16 @@ class App {
 
   // -- handlers ------------------------------------------------------------
 
-  go(view){ this.setState({ view: view }); }
+  go(view){
+    // With the chat extra installed the assistant is the Chainlit app --
+    // richer transcript, streaming steps, session history. This inline chat
+    // stays as the fallback when only the plain SDK is present.
+    if (view === "chat" && this.api.session && this.api.session.chainlit) {
+      window.location.href = "/assistant";
+      return;
+    }
+    this.setState({ view: view });
+  }
   pick(id){ this.setState({ picked: id }); }
   runStep(){ /* set-up steps are run in a terminal; the card shows the command */ }
 
