@@ -297,7 +297,8 @@ def make_handler(profile: Optional[Profile], project_dir: str, session):
             except Exception as exc:
                 self._json({"error": "{0}: {1}".format(type(exc).__name__, exc)}, 500)
                 return
-            self._json({"reply": reply, "steps": steps})
+            charts = list(session.box.charts) if session.box else []
+            self._json({"reply": reply, "steps": steps, "charts": charts})
 
     return Handler
 
@@ -376,6 +377,12 @@ _LIVE = [
     ('<div style="display: grid; grid-template-columns: 1.3fr repeat(4, '
      'minmax(0, 1fr)); gap: 0;">',
      '<div style="display: grid; grid-template-columns: {{ b.grid }}; gap: 0;">'),
+    # The chart block is authored for one fixed example; make it carry the
+    # series of the message it belongs to.
+    ('<sc-for list="{{ chartGroups }}" as="g" hint-placeholder-count="4">',
+     '<sc-for list="{{ b.groups }}" as="g" hint-placeholder-count="4">'),
+    ("Admissions by type and gender", "{{ b.title }}"),
+    ("analyses/_charts.py &rarr; SVG", "{{ b.caption }}"),
     ("Projection you received &mdash; 10 columns",
      "Projection you received &mdash; {{ grantedCount }} columns"),
     ('<div style="flex: 1; font-size: 13.5px; color: #a8a39a;">{{ inputHint }}</div>',

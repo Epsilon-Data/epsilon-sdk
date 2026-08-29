@@ -870,6 +870,29 @@ function parseReply(reply){
   return blocks;
 }
 
+// A chart drawn from the released result, never from anything the model wrote.
+function chartBlock(c){
+  let top = 0;
+  for (const g of c.groups) for (const p of g.pairs) top = Math.max(top, p[1]);
+  const palette = ["#0d6459", "#6fb8a8", "#a8cfc6", "#cfe3dd"];
+  return {
+    kind: "chart",
+    title: c.title,
+    caption: c.source + (c.held ? " · " + c.held + " below the threshold, withheld" : ""),
+    groups: c.groups.map(g => ({
+      label: g.label,
+      bars: g.pairs.map((p, i) => ({
+        who: String(p[0]).slice(0, 14),
+        v: typeof p[1] === "number" ? p[1].toLocaleString() : String(p[1]),
+        w: (top ? Math.max(2, Math.round(100 * p[1] / top)) : 0) + "%",
+        fill: palette[i % palette.length],
+        border: "none",
+        fg: "#1c1b19"
+      }))
+    }))
+  };
+}
+
 // ---------------------------------------------------------------------------
 // The component. renderVals() below is the design's own, unmodified; it calls
 // the data methods, which read the live project instead of the mockup's
@@ -975,6 +998,7 @@ class App {
                          arg: bits && bits[2] ? bits[2] : "" });
     }
     for (const b of parseReply(r.reply || r.error || "")) turn.blocks.push(b);
+    for (const c of (r.charts || [])) turn.blocks.push(chartBlock(c));
     this.setState({ thinking: null });
   }
 

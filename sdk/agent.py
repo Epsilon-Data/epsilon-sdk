@@ -90,13 +90,14 @@ class Session:
     history: List[Turn] = field(default_factory=list)
     tools: List[Tool] = field(default_factory=list)
     transcript_path: Optional[str] = None
+    box: Optional[Toolbox] = None
 
     @classmethod
     def create(cls, provider: Provider, profile: Profile,
                project_dir: str = ".", record: bool = True) -> "Session":
         box = Toolbox(project_dir, profile)
         session = cls(provider=provider, profile=profile, project_dir=project_dir,
-                      tools=build_tools(box))
+                      tools=build_tools(box), box=box)
         if record:
             session.transcript_path = _open_transcript(project_dir, profile)
         return session
@@ -141,6 +142,8 @@ class Session:
             on_step: Optional[Callable[[Step], None]] = None) -> str:
         """Run one researcher request to completion. Returns the final reply."""
         on_step = on_step or (lambda step: None)
+        if self.box is not None:
+            self.box.charts = []   # charts belong to the turn that produced them
         self.history.append(Turn("user", text=message))
         _record(self.transcript_path, {"role": "user", "text": message})
 

@@ -72,12 +72,82 @@ def _truncate(text: str, limit: int = MAX_RESULT_CHARS) -> str:
     ).format(limit, len(text), text[:limit], len(text) - limit)
 
 
+# How many bars are worth drawing before a chart stops being readable.
+MAX_BARS = 12
+
+
+def chartable(result: Any) -> Optional[Dict[str, Any]]:
+    """Find a series worth drawing in an analysis result, or None.
+
+    Reads the shapes the generated templates return. Suppressed cells are
+    carried through as such rather than dropped, so a chart shows the same
+    holes the table does.
+    """
+    if not isinstance(result, dict):
+        return None
+
+    def bars(pairs):
+        shown = [(str(k), v) for k, v in pairs if v is not None][:MAX_BARS]
+        held = len([1 for _k, v in pairs if v is None])
+        return shown, held
+
+    # trend: a series over periods
+    if isinstance(result.get("series"), list) and result["series"]:
+        pairs = [(r.get("period"), r.get("n")) for r in result["series"]]
+        shown, held = bars(pairs)
+        if shown:
+            return {"title": "Series", "groups": [{"label": "", "pairs": shown}],
+                    "held": held}
+
+    # composition / cross_tab: a table whose last numeric column is the count
+    if isinstance(result.get("table"), list) and result["table"]:
+        rows = result["table"]
+        keys = [k for k in rows[0] if k != "n"]
+        if keys:
+            group_key = keys[0]
+            label_key = keys[1] if len(keys) > 1 else keys[0]
+            grouped: Dict[str, List] = {}
+            for r in rows:
+                grouped.setdefault(str(r.get(group_key)), []).append(
+                    (r.get(label_key), r.get("n")))
+            groups, held = [], 0
+            for label, pairs in list(grouped.items())[:6]:
+                shown, h = bars(pairs)
+                held += h
+                if shown:
+                    groups.append({"label": "{0} = {1}".format(group_key, label),
+                                   "pairs": shown})
+            if groups:
+                return {"title": "Counts by " + group_key, "groups": groups,
+                        "held": held}
+
+    # describe: the first field with released levels
+    fields = result.get("fields")
+    if isinstance(fields, dict):
+        for name in sorted(fields):
+            entry = fields[name]
+            if isinstance(entry, dict) and entry.get("top"):
+                pairs = [(lvl.get("value"), lvl.get("n")) for lvl in entry["top"]]
+                shown, held = bars(pairs)
+                if shown:
+                    return {
+                        "title": "Distribution of " + name,
+                        "groups": [{"label": "", "pairs": shown}],
+                        "held": held + int(entry.get("levels_not_shown") or 0),
+                    }
+    return None
+
+
 class Toolbox(object):
     """The tools bound to one project directory."""
 
     def __init__(self, project_dir: str, profile: Profile):
         self.project_dir = os.path.abspath(project_dir)
         self.profile = profile
+        # Chartable series pulled out of whatever the last runs returned. The
+        # model never authors these numbers -- they come straight from the
+        # released result, so a chart cannot disagree with the table above it.
+        self.charts: List[Dict[str, Any]] = []
 
     # -- path safety -----------------------------------------------------
 
@@ -356,6 +426,19 @@ class Toolbox(object):
         if proc.returncode != 0:
             return _truncate("FAILED (exit {0})\n\n{1}\n{2}".format(
                 proc.returncode, err, out))
+
+        # The generated templates print JSON; if the result carries a series
+        # worth drawing, hand it to the caller so the chat can render it.
+        for line in (out[out.find("{"):] if "{" in out else ""), out:
+            try:
+                series = chartable(json.loads(line))
+            except (ValueError, TypeError):
+                continue
+            if series:
+                series["source"] = relative
+                self.charts.append(series)
+                break
+
         return _truncate(out + (("\n[stderr]\n" + err) if err.strip() else ""))
 
     def run_checks(self) -> str:
