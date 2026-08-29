@@ -1,54 +1,82 @@
+// Inline styles throughout, deliberately. Chainlit serves a prebuilt CSS
+// bundle, so Tailwind utilities this file uses but its own components do not
+// are simply absent — the layout silently collapses to stacked text.
 export default function BarChart() {
   const groups = props.groups || [];
-  const palette = ["#0d6459", "#6fb8a8", "#a8cfc6", "#cfe3dd"];
+  const fills = ["#0d6459", "#6fb8a8", "#a8cfc6", "#cfe3dd"];
 
   let top = 0;
   for (const g of groups) for (const b of g.bars) top = Math.max(top, b.value);
 
+  const card = {
+    border: "1px solid rgba(128,128,128,0.25)",
+    borderRadius: "9px",
+    padding: "18px 20px",
+    fontFamily: "system-ui, -apple-system, sans-serif",
+  };
+  const head = {
+    display: "flex", alignItems: "baseline", gap: "10px", marginBottom: "16px",
+  };
+  const title = { fontSize: "13.5px", fontWeight: 600 };
+  const caption = {
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+    fontSize: "10.5px", opacity: 0.6,
+  };
+  const groupLabel = {
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+    fontSize: "11.5px", opacity: 0.75, marginBottom: "6px",
+  };
+  const row = {
+    display: "flex", alignItems: "center", gap: "9px", marginBottom: "4px",
+  };
+  const who = {
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+    fontSize: "10.5px", opacity: 0.7,
+    flex: "0 0 96px", overflow: "hidden", textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  };
+  const track = {
+    flex: 1, height: "15px", borderRadius: "3px",
+    background: "rgba(128,128,128,0.18)", position: "relative",
+  };
+  const value = {
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+    fontSize: "11.5px", flex: "0 0 74px", textAlign: "right",
+  };
+
   return (
-    <div className="rounded-lg border p-5 bg-background">
-      <div className="flex items-baseline gap-3 mb-4">
-        <span className="text-sm font-semibold">{props.title}</span>
-        <span className="text-xs font-mono text-muted-foreground">
-          {props.caption}
-        </span>
+    <div style={card}>
+      <div style={head}>
+        <span style={title}>{props.title}</span>
+        <span style={caption}>{props.caption}</span>
       </div>
 
-      <div className="flex flex-col gap-4">
+      <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
         {groups.map((g, gi) => (
           <div key={gi}>
-            {g.label ? (
-              <div className="text-xs font-mono text-muted-foreground mb-1.5">
-                {g.label}
-              </div>
-            ) : null}
-            <div className="flex flex-col gap-1">
-              {g.bars.map((b, i) => (
-                <div key={i} className="flex items-center gap-2.5">
-                  <span className="text-xs font-mono text-muted-foreground w-28 shrink-0 truncate">
-                    {b.who}
-                  </span>
-                  <div className="flex-1 h-4 rounded-sm bg-muted relative">
-                    <div
-                      className="absolute inset-y-0 left-0 rounded-sm"
-                      style={{
-                        width: top ? Math.max(2, (100 * b.value) / top) + "%" : 0,
-                        background: palette[i % palette.length],
-                      }}
-                    />
-                  </div>
-                  <span className="text-xs font-mono w-20 text-right shrink-0">
-                    {b.label}
-                  </span>
+            {g.label ? <div style={groupLabel}>{g.label}</div> : null}
+            {g.bars.map((b, i) => (
+              <div key={i} style={row}>
+                <span style={who}>{b.who}</span>
+                <div style={track}>
+                  <div
+                    style={{
+                      position: "absolute", left: 0, top: 0, bottom: 0,
+                      width: top ? Math.max(2, (100 * b.value) / top) + "%" : 0,
+                      borderRadius: "3px",
+                      background: fills[i % fills.length],
+                    }}
+                  />
                 </div>
-              ))}
-            </div>
+                <span style={value}>{b.label}</span>
+              </div>
+            ))}
           </div>
         ))}
       </div>
 
       {props.held ? (
-        <div className="text-xs text-muted-foreground mt-4">
+        <div style={{ ...caption, marginTop: "14px", display: "block" }}>
           {props.held} level(s) below the suppression threshold — withheld
         </div>
       ) : null}
