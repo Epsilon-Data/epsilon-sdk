@@ -661,3 +661,24 @@ class TestEntryPoint:
         """Otherwise it sends the researcher straight back here."""
         from sdk.projects_page import PAGE as PROJECTS_PAGE
         assert "p.initialised" in PROJECTS_PAGE
+
+
+class TestSetupSteps:
+    """An un-initialised project shows what to do, not what to run."""
+
+    def test_the_page_asks_for_the_steps(self):
+        from sdk.projects_page import PAGE as PROJECTS_PAGE
+        assert "/api/status" in PROJECTS_PAGE
+        assert "stepsHtml" in PROJECTS_PAGE
+
+    def test_steps_replace_the_cards_until_there_is_a_projection(self):
+        from sdk.projects_page import PAGE as PROJECTS_PAGE
+        assert "p.initialised" in PROJECTS_PAGE
+        assert "stepsHtml()" in PROJECTS_PAGE
+
+    def test_the_steps_carry_a_command_and_a_done_flag(self, profile,
+                                                       dataset_dir):
+        payload = status_payload(profile, str(dataset_dir))
+        assert payload["steps"]
+        for step in payload["steps"]:
+            assert "cmd" in step and "done" in step and "title" in step

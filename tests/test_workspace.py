@@ -203,3 +203,28 @@ class TestReferrer:
 
     def test_an_unrelated_url_yields_nothing(self):
         assert ws.token_from_referrer("https://example.com/?q=seedling") == ""
+
+
+class TestAutoRegister:
+    def test_registering_is_opt_in(self, dataset_dir, no_model):
+        ws.Workspace(str(dataset_dir))
+        assert registry.load() == []
+
+    def test_starting_inside_a_project_registers_it(self, dataset_dir, no_model):
+        space = ws.Workspace(str(dataset_dir), profile_project(str(dataset_dir)),
+                             register=True)
+        assert space.project is not None
+        assert space.project.name == space.profile.title
+
+    def test_starting_somewhere_else_registers_nothing(self, tmp_path, no_model):
+        folder = tmp_path / "elsewhere"
+        folder.mkdir()
+        space = ws.Workspace(str(folder), register=True)
+        assert space.project is None
+        assert registry.load() == []
+
+    def test_starting_twice_does_not_duplicate(self, dataset_dir, no_model):
+        profile = profile_project(str(dataset_dir))
+        ws.Workspace(str(dataset_dir), profile, register=True)
+        ws.Workspace(str(dataset_dir), profile, register=True)
+        assert len(registry.load()) == 1

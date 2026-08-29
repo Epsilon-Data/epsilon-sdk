@@ -181,6 +181,29 @@ PAGE = r'''<!doctype html>
   }
   .ghost:hover { border-color: var(--muted); color: var(--ink); }
 
+  .steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+  .step {
+    display: flex; gap: 13px; align-items: flex-start; padding: 13px 15px;
+    background: var(--card); border: 1px solid var(--rule); border-radius: 8px;
+  }
+  .step.done { background: transparent; border-color: transparent; }
+  .step .tick {
+    flex: none; width: 19px; height: 19px; border-radius: 50%;
+    border: 1px solid var(--rule); display: flex; align-items: center;
+    justify-content: center; font-size: 11px; margin-top: 1px;
+  }
+  .step.done .tick {
+    background: var(--deep); border-color: var(--deep); color: #fff;
+  }
+  .step b { display: block; font-size: 13.5px; font-weight: 600; }
+  .step b i { font-weight: 400; color: var(--muted); font-style: normal; }
+  .step code {
+    display: inline-block; font-family: var(--mono); font-size: 12px;
+    background: #efece6; padding: 2px 7px; border-radius: 4px; margin: 5px 0 0;
+  }
+  .step.done code { background: transparent; padding-left: 0; color: var(--muted); }
+  .step small { display: block; color: var(--muted); font-size: 12px; margin-top: 4px; }
+
   .spin { color: var(--muted); font-size: 13px; }
   @media (prefers-reduced-motion: no-preference) {
     .card, .rail-item, .primary { transition: all .12s ease; }
@@ -203,8 +226,8 @@ const esc = (t) => String(t == null ? "" : t)
   .replace(/&/g, "&amp;").replace(/</g, "&lt;")
   .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
-const state = { projects: [], openId: null, cards: null, view: "home",
-                error: "", busy: false };
+const state = { projects: [], openId: null, cards: null, steps: null,
+                view: "home", error: "", busy: false };
 
 async function api(path, body) {
   const res = await fetch(path, body ? {
@@ -228,6 +251,13 @@ async function load() {
 async function loadCards(refresh) {
   state.cards = null;
   paint();
+  // The steps are read off the disk, so they are right even when a step was
+  // done in a terminal a moment ago.
+  try {
+    state.steps = await api("/api/status");
+  } catch (e) {
+    state.steps = null;
+  }
   try {
     const c = await api("/api/cards" + (refresh ? "?refresh=1" : ""));
     state.cards = c;
@@ -333,6 +363,30 @@ function cardsHtml() {
     '</p>';
 }
 
+function stepsHtml() {
+  const s = state.steps;
+  if (!s || !s.steps) return "";
+  const left = s.steps.filter(x => !x.done && !x.optional).length;
+  return (
+    '<section>' +
+      '<h2>Set up</h2>' +
+      '<p class="sub">' + (left
+        ? 'Each step is detected from the folder, so doing one in a terminal ' +
+          'and reloading loses nothing.'
+        : 'Everything is in place.') + '</p>' +
+      '<ol class="steps">' + s.steps.map(x => (
+        '<li class="step' + (x.done ? ' done' : '') + '">' +
+          '<span class="tick">' + (x.done ? '✓' : '') + '</span>' +
+          '<div>' +
+            '<b>' + esc(x.title) +
+              (x.optional ? '<i> · optional</i>' : '') + '</b>' +
+            '<code>' + esc(x.cmd) + '</code>' +
+            '<small>' + esc(x.note || x.desc) + '</small>' +
+          '</div>' +
+        '</li>')).join("") + '</ol>' +
+    '</section>');
+}
+
 function homeHtml(p) {
   const facts = [];
   if (state.cards && state.cards.ready) {
@@ -344,21 +398,25 @@ function homeHtml(p) {
     (p.description ? '<p class="desc">' + esc(p.description) + '</p>' : '') +
     '<p class="path">' + esc(p.path) +
       (p.exists ? '' : ' — <span class="flag">missing</span>') + '</p>' +
-    '<section>' +
-      '<h2>Ask</h2>' +
-      '<p class="sub">Describe what you want to find out. The assistant ' +
-        'checks it against the archetype before writing anything.</p>' +
-      '<form class="ask" id="askform">' +
-        '<input id="q" placeholder="Is diabetes more common at higher BMI?" ' +
-          'autocomplete="off">' +
-        '<button type="submit">Ask</button>' +
-      '</form>' +
-    '</section>' +
-    '<section>' +
-      '<h2>Start from</h2>' +
-      '<p class="sub">Each opens a session that already knows this project.</p>' +
-      cardsHtml() +
-    '</section>' +
+    (p.initialised
+      ? '<section>' +
+          '<h2>Ask</h2>' +
+          '<p class="sub">Describe what you want to find out. The assistant ' +
+            'checks it against the archetype before writing anything.</p>' +
+          '<form class="ask" id="askform">' +
+            '<input id="q" placeholder="Is diabetes more common at higher ' +
+              'BMI?" autocomplete="off">' +
+            '<button type="submit">Ask</button>' +
+          '</form>' +
+        '</section>'
+      : '') +
+    (p.initialised
+      ? '<section>' +
+          '<h2>Start from</h2>' +
+          '<p class="sub">Each opens a session that already knows this ' +
+            'project.</p>' + cardsHtml() +
+        '</section>'
+      : stepsHtml()) +
     '<section>' +
       '<h2>Project</h2>' +
       '<div class="actions">' +

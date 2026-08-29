@@ -924,7 +924,7 @@ def start(
 
     from sdk import webapp as app_mod
     from sdk.workspace import Workspace
-    space = Workspace(".", profile, session)
+    space = Workspace(".", profile, session, register=True)
 
     # With the chat extra the workspace and the assistant share one origin, so
     # a suggested analysis can open a session that already knows the project.
@@ -946,7 +946,7 @@ def start(
 
     try:
         server, url = ui_mod.serve(profile, ".", session, port,
-                                   open_browser=not no_browser)
+                                   open_browser=not no_browser, space=space)
     except OSError as exc:
         typer.secho("Could not start on port {0}: {1}".format(port, exc),
                     fg=typer.colors.RED)

@@ -154,3 +154,42 @@ class TestRefusals:
     def test_a_padded_path_still_registers(self, folder):
         assert projects.add("Cohort", "  " + folder + "  ").path == \
             os.path.abspath(folder)
+
+
+class TestEnsure:
+    """Starting the workspace inside a project registers it, without a form."""
+
+    def test_registers_an_initialised_directory(self, folder):
+        os.makedirs(os.path.join(folder, "generated"))
+        open(os.path.join(folder, "generated", "data.csv"), "w").close()
+        project = projects.ensure(folder, "DiaBD Diabetes Risk")
+        assert project is not None
+        assert project.name == "DiaBD Diabetes Risk"
+
+    def test_registers_a_directory_with_a_project_file(self, folder):
+        open(os.path.join(folder, "project.yml"), "w").close()
+        assert projects.ensure(folder) is not None
+
+    def test_names_it_after_the_folder_when_nothing_better_is_known(self, folder):
+        open(os.path.join(folder, "project.yml"), "w").close()
+        assert projects.ensure(folder).name == os.path.basename(folder)
+
+    def test_ignores_a_directory_that_is_not_a_project(self, folder):
+        assert projects.ensure(folder) is None
+        assert projects.load() == []
+
+    def test_returns_the_existing_entry_rather_than_a_second_one(self, folder):
+        open(os.path.join(folder, "project.yml"), "w").close()
+        first = projects.ensure(folder, "First")
+        again = projects.ensure(folder, "Second")
+        assert again.id == first.id
+        assert len(projects.load()) == 1
+
+    def test_an_already_registered_directory_is_returned_as_is(self, folder):
+        added = projects.add("Cohort", folder)
+        assert projects.ensure(folder, "Other").id == added.id
+
+    def test_looks_like_project_is_what_decides(self, folder):
+        assert projects.looks_like_project(folder) is False
+        open(os.path.join(folder, "project.yml"), "w").close()
+        assert projects.looks_like_project(folder) is True

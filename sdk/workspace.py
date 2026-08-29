@@ -168,11 +168,16 @@ class Workspace:
     """Which project is open, and everything measured about it."""
 
     def __init__(self, project_dir: str = ".", profile: Optional[Profile] = None,
-                 session=None):
+                 session=None, register: bool = False):
         self.project_dir = os.path.abspath(project_dir)
         self.profile = profile
         self.session = session
         self.project = registry.by_path(self.project_dir)
+        # Starting the workspace inside a project is itself a statement that
+        # you are working on it, so it is added to the list without a form.
+        if register and self.project is None:
+            self.project = registry.ensure(
+                self.project_dir, profile.title if profile else "")
         self._suggestions: Optional[List[suggest_mod.Suggestion]] = None
         self._counter = 0
 

@@ -426,10 +426,11 @@ def make_handler(space):
 
 
 def serve(profile: Optional[Profile], project_dir: str = ".", session=None,
-          port: int = DEFAULT_PORT, open_browser: bool = True):
+          port: int = DEFAULT_PORT, open_browser: bool = True, space=None):
     """Serve the interface on loopback until interrupted."""
     from sdk.workspace import Workspace
-    space = Workspace(project_dir, profile, session)
+    if space is None:
+        space = Workspace(project_dir, profile, session)
     handler = make_handler(space)
     server = ThreadingHTTPServer(("127.0.0.1", port), handler)
     url = "http://127.0.0.1:{0}/".format(port)

@@ -149,6 +149,38 @@ def add(name: str, path: str, description: str = "") -> Project:
     return project
 
 
+def looks_like_project(path: str) -> bool:
+    """Whether a directory is an Epsilon project rather than any folder.
+
+    `epsilon init` leaves both of these behind. Requiring one of them keeps
+    the list to real work: starting the workspace in a home directory or a
+    scratch folder should not quietly add an entry to it.
+    """
+    full = os.path.abspath(os.path.expanduser(path or "."))
+    return (os.path.exists(os.path.join(full, "generated", "data.csv"))
+            or os.path.exists(os.path.join(full, "project.yml")))
+
+
+def ensure(path: str, name: str = "", description: str = "") -> Optional[Project]:
+    """Register the directory being worked in, if it is worth registering.
+
+    Returns the existing entry when there is one, so starting the workspace
+    twice does not create two projects. Returns None for a directory that is
+    not a project, which is not an error -- there is simply nothing to add.
+    """
+    full = os.path.abspath(os.path.expanduser(path or "."))
+    existing = by_path(full)
+    if existing is not None:
+        return existing
+    if not looks_like_project(full):
+        return None
+    try:
+        return add(name or os.path.basename(full) or "project", full,
+                   description)
+    except ProjectError:
+        return None
+
+
 def touch(project_id: str) -> Optional[Project]:
     """Record that a project was opened, so the list can lead with recent work."""
     projects = load()
