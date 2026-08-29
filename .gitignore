@@ -6,3 +6,8 @@ dist/
 build/
 *.egg-info/
 .venv/
+
+# Chainlit scaffolding, generated on first run
+chainlit.md
+.chainlit/
+.files/
