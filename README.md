@@ -137,16 +137,30 @@ epsilon check                         # run the submission rules locally
 Fields are chosen for you; `--set` overrides one, validated against what was
 measured. The command `epsilon explain` prints is the one that reproduces it.
 
-### `epsilon ui` -- the browser view
+### `epsilon ui` -- the guided view
 
 ```bash
 epsilon ui
 ```
 
-Opens a page showing what the dataset holds, what it can and cannot answer with
-reasons, and a chat box if a model is configured. It serves on loopback only
-and runs beside your project, so the data and your key never leave the machine.
-Standard library only -- no node toolchain, no network access needed.
+Opens a browser and walks the workflow above as seven steps, showing where you
+are. Each step is **detected from the project**, not remembered -- do a step in
+the terminal and reload, and the page catches up.
+
+1. Sign in
+2. Start a project
+3. Understand your data -- grain, fields, what the measurement flagged
+4. Choose what to build -- available and blocked, every refusal with its reason
+5. Run it -- executes locally against synthetic data
+6. Check before submitting -- the same rules the coordinator applies
+7. Ask the copilot -- if a model is configured
+
+Steps 4, 5 and 6 are clickable: generate an analysis, run it, re-check. Steps 1
+to 6 need no model at all.
+
+It serves on loopback only and runs beside your project, so the data and your
+key never leave the machine. Standard library only -- no node toolchain, no
+network access needed.
 
 ### What is measured, and what cannot be
 
