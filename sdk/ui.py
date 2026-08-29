@@ -313,377 +313,61 @@ def serve(profile: Optional[Profile], project_dir: str = ".", session=None,
     return server, url
 
 
-PAGE = r'''<!doctype html>
-<html lang="en"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Epsilon workspace</title>
-<style>
-:root{
-  --bg:#f5f7f6;--surface:#fff;--surface-2:#edf1ef;
-  --ink:#141d1b;--ink-2:#4c5c58;--ink-3:#7c8c87;
-  --rule:#dbe2df;--accent:#0d6b60;--accent-soft:#e1efeb;
-  --warn:#8e5b0c;--warn-soft:#f6ecd9;--stop:#a03728;--stop-soft:#f7e5e1;
-  --ok:#2c6b3b;--ok-soft:#e2efe4;
-  --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
-  --sans:system-ui,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;
-}
-@media(prefers-color-scheme:dark){:root{
-  --bg:#0e1413;--surface:#161e1c;--surface-2:#1c2523;
-  --ink:#e7eeeb;--ink-2:#9daea9;--ink-3:#75857f;
-  --rule:#26302e;--accent:#5ac3b2;--accent-soft:#153029;
-  --warn:#d9a45c;--warn-soft:#2c2417;--stop:#e58c7c;--stop-soft:#301c19;
-  --ok:#83c392;--ok-soft:#18291c;
-}}
-*{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);
-  font-size:15px;line-height:1.55}
-.wrap{max-width:900px;margin:0 auto;padding:0 20px 70px}
-header{padding:30px 0 14px;display:flex;justify-content:space-between;align-items:flex-start;gap:16px}
-h1{margin:0;font-size:20px;letter-spacing:-.01em}
-.sub{font-family:var(--mono);font-size:11px;color:var(--ink-3);margin-top:5px}
-nav{display:flex;gap:2px;background:var(--surface-2);border-radius:6px;padding:3px;
-  margin:6px 0 18px}
-nav button{flex:1;font:inherit;font-size:13px;font-weight:600;padding:7px 12px;border:0;
-  border-radius:4px;background:none;color:var(--ink-3);cursor:pointer}
-nav button.on{background:var(--surface);color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.06)}
-nav button:disabled{opacity:.4;cursor:default}
+def build_page() -> str:
+    """Assemble the workspace page from the design's markup and our runtime."""
+    from sdk import ui_page
 
-.card{background:var(--surface);border:1px solid var(--rule);border-radius:6px;
-  padding:14px 16px;margin-top:10px}
-.card.now{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
-h2{font-size:13px;font-family:var(--mono);letter-spacing:.12em;text-transform:uppercase;
-  color:var(--ink-3);font-weight:500;margin:26px 0 6px}
-h3{margin:0;font-size:15px;font-weight:600}
-p{margin:0}
-.msg{font-size:12.5px;color:var(--ink-3);margin-top:6px}
-.msg.bad{color:var(--stop)}
+    return (
+        "<!doctype html>\n<html lang=\"en\"><head>\n"
+        "<meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n"
+        "<title>Epsilon workspace</title>\n"
+        "<link rel=\"preconnect\" href=\"https://fonts.googleapis.com\">\n"
+        "<link rel=\"preconnect\" href=\"https://fonts.gstatic.com\" crossorigin>\n"
+        "<link rel=\"stylesheet\" href=\"https://fonts.googleapis.com/css2?"
+        "family=IBM+Plex+Sans:wght@400;500;600&"
+        "family=IBM+Plex+Mono:wght@400;500;600&display=swap\">\n"
+        "<style>" + ui_page.STYLE + "</style>\n"
+        "</head><body><div id=\"root\"></div>\n<script>\n"
+        # One count is written into the design copy; make it follow the data.
+        "const MARKUP = " + _js_string(ui_page.MARKUP.replace(
+            "Projection you received &mdash; 10 columns",
+            "Projection you received &mdash; {{ grantedCount }} columns")) + ";\n"
+        # renderVals is authored as a method; make it a function expression
+        # so it can be attached to the runtime's prototype unchanged.
+        "const RENDER_VALS_FN = " + _strip_fixtures(
+            ui_page.RENDER_VALS.replace("renderVals()", "function()", 1)) + ";\n"
+        + ui_page.RUNTIME +
+        "\n</script></body></html>\n"
+    )
 
-.steprow{display:flex;align-items:center;gap:11px}
-.num{width:22px;height:22px;border-radius:50%;flex:none;display:grid;place-items:center;
-  font-family:var(--mono);font-size:11px;font-weight:700;background:var(--surface-2);color:var(--ink-3)}
-.card.done .num{background:var(--ok-soft);color:var(--ok)}
-.card.now .num{background:var(--accent);color:var(--bg)}
-.tail{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--ink-3)}
-.card.done .tail{color:var(--ok)}
 
-.cmd{display:flex;align-items:center;gap:8px;margin-top:10px;background:var(--surface-2);
-  border-radius:5px;padding:8px 10px}
-.cmd code{flex:1;font-family:var(--mono);font-size:12.5px;color:var(--ink);
-  overflow-x:auto;white-space:nowrap}
-.copy{font:inherit;font-family:var(--mono);font-size:11px;padding:4px 9px;border:1px solid var(--rule);
-  border-radius:4px;background:var(--surface);color:var(--ink-2);cursor:pointer;flex:none}
-.copy:hover{border-color:var(--accent);color:var(--accent)}
-.copy.did{background:var(--ok-soft);color:var(--ok);border-color:var(--ok-soft)}
+# The design ships sample content as fall-backs inside its own derivation.
+# The runtime overrides all of it, but a bug there would surface invented
+# column names and row counts as though they were measured. Emptying them at
+# build time makes that impossible rather than unlikely.
+_FIXTURES = [
+    ("const stripped = ['patient_id', 'mrn', 'admission_id', 'site_id', "
+     "'notes.text', 'clinician_id'];", "const stripped = [];"),
+    ("['patient.gender', 'admissions.type', '+ 8 more']", "[]"),
+]
 
-.grain{background:var(--surface-2);border-left:3px solid var(--accent);border-radius:5px;
-  padding:12px 14px}
-.grain b{display:block;font-size:15px}
-.grain .n{font-family:var(--mono);font-size:12px;color:var(--ink-2)}
-.grain .no{color:var(--warn);font-family:var(--mono);font-size:12px;display:block;margin-top:5px}
 
-.split{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}
-.side{border-radius:5px;padding:12px 14px}
-.side.gone{background:var(--stop-soft);border:1px dashed var(--stop)}
-.side.have{background:var(--ok-soft);border:1px solid var(--rule)}
-.side h4{margin:0 0 7px;font-size:12.5px;font-family:var(--mono);letter-spacing:.06em;
-  text-transform:uppercase}
-.side.gone h4{color:var(--stop)}
-.side.have h4{color:var(--ok)}
-.side ul{margin:0;padding-left:16px;font-size:12.5px;color:var(--ink-2)}
-.side .cols{font-family:var(--mono);font-size:11.5px;color:var(--ink-2);line-height:1.7}
+def _strip_fixtures(js: str) -> str:
+    for old, new in _FIXTURES:
+        js = js.replace(old, new)
+    # Any remaining single-quoted string naming the mockup's dataset, its row
+    # count or its archetype is sample copy; empty it rather than let it show.
+    import re as _re
+    js = _re.sub(r"'[^']*(?:nordic-icu-2019|icu_encounter_v3|41,208)[^']*'",
+                 "''", js)
+    return js
 
-table{width:100%;border-collapse:collapse;font-size:13px;margin-top:10px}
-th{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;
-  color:var(--ink-3);font-weight:500;text-align:left;padding:7px 10px;background:var(--surface-2)}
-td{padding:7px 10px;border-top:1px solid var(--rule);color:var(--ink-2)}
-td.p{font-family:var(--mono);font-size:12px;color:var(--ink)}
-td .cav{color:var(--warn);font-size:11.5px;display:block;margin-top:2px}
 
-.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
-.chip{font-family:var(--mono);font-size:11px;padding:4px 9px;border-radius:4px}
-.chip.y{background:var(--ok-soft);color:var(--ok)}
-.chip.n{background:var(--stop-soft);color:var(--stop)}
-.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:9px;margin-top:10px}
-.acard{border:1px solid var(--rule);border-radius:5px;padding:11px 13px;background:var(--bg)}
-.acard.no{border-style:dashed;opacity:.9}
-.acard h3{font-size:13.5px;display:flex;justify-content:space-between;gap:8px;align-items:center}
-.acard p{font-size:12px;color:var(--ink-3);line-height:1.45;margin-top:4px}
-.acard p.why{color:var(--stop)}
-.acard .unlock{font-size:11.5px;color:var(--ink-3);margin-top:6px;display:block}
-button.go{font:inherit;font-size:13px;font-weight:600;padding:7px 13px;border:1px solid var(--accent);
-  border-radius:5px;background:var(--accent);color:var(--bg);cursor:pointer}
-button.plain{font:inherit;font-size:13px;font-weight:600;padding:7px 13px;border:1px solid var(--rule);
-  border-radius:5px;background:var(--surface);color:var(--ink);cursor:pointer}
-.acard button{margin-top:9px;width:100%}
-.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px}
-select{font:inherit;font-size:13px;padding:7px 10px;border:1px solid var(--rule);
-  border-radius:5px;background:var(--bg);color:var(--ink)}
-pre{background:var(--surface-2);border-radius:5px;padding:11px 13px;overflow-x:auto;
-  font-family:var(--mono);font-size:11.5px;color:var(--ink-2);margin:10px 0 0;
-  max-height:300px;white-space:pre-wrap;position:relative}
-.diag{font-family:var(--mono);font-size:12px;margin-top:10px}
-.diag div{padding:3px 0}
-.diag .b{color:var(--stop)} .diag .w{color:var(--warn)} .diag .g{color:var(--ok)}
+def _js_string(text: str) -> str:
+    """Embed arbitrary markup as a JS string literal."""
+    import json
+    return json.dumps(text)
 
-#log{max-height:44vh;overflow-y:auto}
-.turn{padding:9px 0;border-top:1px solid var(--rule)}
-.turn:first-child{border-top:0}
-.who{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;
-  color:var(--ink-3);margin-bottom:4px}
-.turn .t{white-space:pre-wrap;font-size:13.5px;color:var(--ink-2)}
-.steps{font-family:var(--mono);font-size:11px;color:var(--ink-3);margin-bottom:5px}
-form{display:flex;gap:8px;margin-top:10px}
-input{flex:1;font:inherit;font-size:13.5px;padding:8px 11px;border:1px solid var(--rule);
-  border-radius:5px;background:var(--bg);color:var(--ink)}
-input:focus{outline:2px solid var(--accent);outline-offset:-1px}
-.try{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}
-.try button{font:inherit;font-size:12px;padding:5px 10px;border:1px solid var(--rule);
-  border-radius:20px;background:var(--surface);color:var(--ink-2);cursor:pointer}
-.try button:hover{border-color:var(--accent);color:var(--accent)}
-.lock{text-align:center;padding:26px 16px;color:var(--ink-3)}
-.lock b{display:block;color:var(--ink);font-size:15px;margin-bottom:6px}
-@media(max-width:640px){.split{grid-template-columns:1fr}}
-</style></head><body>
-<div class="wrap">
-  <header>
-    <div><h1 id="title">Epsilon workspace</h1><div class="sub" id="sub"></div></div>
-  </header>
-  <nav>
-    <button id="n0" class="on" onclick="go(0)">Set up</button>
-    <button id="n1" onclick="go(1)">Dataset</button>
-    <button id="n2" onclick="go(2)">Assistant</button>
-  </nav>
-  <div id="view"></div>
-</div>
 
-<script>
-const $ = s => document.querySelector(s);
-const esc = t => String(t == null ? "" : t)
-  .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
-const j = async (p, body) => (await fetch(p, body ? {
-  method:"POST", headers:{"Content-Type":"application/json"},
-  body: JSON.stringify(body)} : undefined)).json();
-
-let D = {ready:false}, A = [], S = {steps:[]}, TAB = 0;
-
-window.copy = (btn, text) => {
-  navigator.clipboard.writeText(text).then(() => {
-    const was = btn.textContent;
-    btn.textContent = "copied"; btn.classList.add("did");
-    setTimeout(() => { btn.textContent = was; btn.classList.remove("did"); }, 1200);
-  });
-};
-
-const cmdBox = text =>
-  '<div class="cmd"><code>' + esc(text) + '</code>' +
-  '<button class="copy" onclick="copy(this, ' + JSON.stringify(text)
-    .replace(/"/g, "&quot;") + ')">copy</button></div>';
-
-function setup(){
-  let firstOpen = false;
-  return S.steps.map((s, i) => {
-    const isNow = !s.done && !firstOpen && (firstOpen = true);
-    return '<div class="card ' + (s.done ? "done" : isNow ? "now" : "") + '">' +
-      '<div class="steprow"><span class="num">' + (s.done ? "✓" : i + 1) + '</span>' +
-      '<h3>' + esc(s.title) + '</h3><span class="tail">' +
-      (s.done ? "done" : s.optional ? "optional" : "") + '</span></div>' +
-      '<p class="msg">' + esc(s.desc) + '</p>' +
-      cmdBox(s.cmd) +
-      '<p class="msg">' + esc(s.note) + '</p></div>';
-  }).join("") +
-  (D.ready ? '<div class="card"><p class="msg">Project is ready. ' +
-    '<b>Dataset</b> shows what you have; <b>Assistant</b> answers questions about it.</p>' +
-    '<div class="row"><button class="go" onclick="go(1)">See the dataset →</button></div></div>' : "");
-}
-
-function dataset(){
-  if (!D.ready)
-    return '<div class="card"><p class="msg">No project yet. Finish set-up first.</p></div>';
-  const fields = D.fields.map(f => {
-    let v = f.type;
-    if (f.range) v = f.type + " " + f.range[0] + "–" + f.range[1];
-    else if (f.categories.length) v = f.categories.join(", ") +
-      (f.cardinality > f.categories.length ? ", …" : "");
-    else if (f.cardinality) v = f.type + " (" + f.cardinality.toLocaleString() + ")";
-    const chip = f.access === "DETAILED" ? "detailed"
-      : ((f.releasableAs || []).join(" · ") || "aggregate");
-    return '<tr><td class="p">' + esc(f.path) + '</td><td>' + esc(v) +
-      (f.caveats.length ? '<span class="cav">! ' + esc(f.caveats[0]) + '</span>' : '') +
-      '</td><td>' + esc(chip) + '</td><td>' +
-      (f.coverage == null ? "—" : Math.round(f.coverage * 100) + "%") + '</td></tr>';
-  }).join("");
-
-  return '<div class="card"><div class="grain"><b>One row is a ' + esc(D.unit) + '</b>' +
-    '<span class="n">' + (D.rows != null ? D.rows.toLocaleString() + " rows" : "") + '</span>' +
-    (D.hasEntityKey ? "" : '<span class="no">No key groups rows back to a person or case — ' +
-      'per-entity figures are not computable</span>') + '</div></div>' +
-
-    '<h2>What you actually have</h2>' +
-    '<div class="split">' +
-      '<div class="side gone"><h4>Never reached this machine</h4><ul>' +
-        D.stripped.map(x => '<li>' + esc(x) + '</li>').join("") +
-      '</ul></div>' +
-      '<div class="side have"><h4>Projection you received — ' + D.granted + ' columns</h4>' +
-        '<div class="cols">' + D.fields.map(f => esc(f.path)).join("<br>") + '</div></div>' +
-    '</div>' +
-    '<p class="msg">The source record is projected down to the columns your archetype ' +
-    'grants. Everything below was counted from that projection by <code>epsilon init</code> ' +
-    '— nothing was authored by hand, so nothing can drift out of sync with the data.</p>' +
-
-    '<h2>Granted columns, as measured</h2>' +
-    '<div class="card"><table><thead><tr><th>Column</th><th>Measured</th>' +
-    '<th>Access</th><th>Coverage</th></tr></thead><tbody>' + fields + '</tbody></table></div>' +
-    (D.notes.length ? '<p class="msg">' + esc(D.notes[0]) + '</p>' : "") +
-
-    '<h2>Feasibility — decided in code</h2>' +
-    '<div class="chips">' + A.map(m =>
-      '<span class="chip ' + (m.status === "FEASIBLE" ? "y" : "n") + '">' +
-      (m.status === "FEASIBLE" ? "yes" : "no") + "  " + esc(m.key) + '</span>').join("") +
-    '</div>' +
-    '<p class="msg">Answered by <code>epsilon explain</code> from ordinary Python ' +
-    'predicates. The assistant reaches the same predicates through a tool — it cannot ' +
-    'overrule one.</p>' +
-
-    '<h2>What you can build</h2>' + cards() +
-    '<h2>Run and check</h2>' + runCheck();
-}
-
-function cards(){
-  const card = m => '<div class="acard' + (m.status === "FEASIBLE" ? '' : ' no') + '">' +
-    '<h3>' + esc(m.title) + '</h3>' +
-    (m.status === "FEASIBLE"
-      ? '<p>' + esc(m.summary) + '</p>' +
-        '<button class="go" onclick="gen(\'' + m.key + '\')">Generate code</button>'
-      : '<p class="why">' + esc(m.blockers[0] || "") + '</p>' +
-        (m.unlock ? '<span class="unlock">' + esc(m.unlock) + '</span>' : '')) + '</div>';
-  return '<div class="cards">' +
-    A.filter(m => m.status === "FEASIBLE").map(card).join("") +
-    A.filter(m => m.status !== "FEASIBLE").map(card).join("") +
-    '</div><div id="genmsg"></div>';
-}
-
-function runCheck(){
-  const run = S.analyses.length
-    ? '<div class="row"><select id="mod">' +
-      S.analyses.map(m => '<option>' + esc(m) + '</option>').join("") +
-      '</select><button class="go" onclick="runIt()">Run on synthetic data</button>' +
-      '<button class="plain" onclick="recheck()">Check</button></div>' +
-      '<p class="msg">Runs locally against generated/data.csv. These are not results.</p>'
-    : '<p class="msg">Generate an analysis above, then run it here.</p>';
-  const state = S.blocking
-    ? '<div class="diag"><div class="b">' + S.blocking + ' blocking issue' +
-      (S.blocking === 1 ? '' : 's') + ' — this would not pass the gate</div></div>'
-    : '<div class="diag"><div class="g">✓ checks passing</div></div>';
-  return '<div class="card">' + run + state + '<div id="out"></div></div>';
-}
-
-const TRY = ["What can I compute with this dataset?",
-             "Why can't I compute prevalence?",
-             "Cross-tab the two categorical columns and run it"];
-
-function assistant(){
-  if (!D.ready)
-    return '<div class="card"><div class="lock"><b>No project yet</b>' +
-      'The assistant only answers about a dataset already initialised here. ' +
-      'Finish set-up first.</div></div>';
-  if (!S.model)
-    return '<div class="card"><div class="lock"><b>Assistant needs a model</b>' +
-      'Run <code>epsilon ai login</code> and reload. Your key stays in this ' +
-      'machine\'s keyring and calls go straight to the endpoint — Epsilon never ' +
-      'sees a prompt.</div>' + cmdBox("epsilon ai login") + '</div>';
-  return '<div class="card"><p class="msg">' + esc(S.model.provider) + ' · ' +
-    esc(S.model.model) + ' · key via ' + esc(S.model.source) +
-    '<br>Transcript saved to .epsilon/chat/' +
-    (D.schemaHash ? ', pinned to schema ' + esc(D.schemaHash) : '') + '</p>' +
-    '<div id="log"></div>' +
-    '<form id="f"><input id="q" autocomplete="off" ' +
-    'placeholder="Ask anything about this dataset…"><button class="go">Ask</button></form>' +
-    '<div class="try">' + TRY.map(t =>
-      '<button onclick="ask2(' + JSON.stringify(t).replace(/"/g,"&quot;") +
-      ')">' + esc(t) + '</button>').join("") + '</div></div>';
-}
-
-function render(){
-  ["n0","n1","n2"].forEach((id, i) => {
-    const b = $("#" + id);
-    b.className = i === TAB ? "on" : "";
-    b.disabled = i > 0 && !D.ready;
-  });
-  $("#view").innerHTML = [setup, dataset, assistant][TAB]();
-  const f = $("#f");
-  if (f) f.addEventListener("submit", e => { e.preventDefault(); ask2($("#q").value); });
-}
-
-window.go = t => { TAB = t; render(); };
-
-async function refresh(){
-  S = await j("/api/status");
-  D = await j("/api/dataset");
-  A = D.ready ? (await j("/api/analyses")).analyses : [];
-  $("#title").textContent = D.ready ? D.title : "Epsilon workspace";
-  $("#sub").textContent = D.ready
-    ? [D.archetype && "archetype " + D.archetype,
-       D.rows != null && D.rows.toLocaleString() + " rows",
-       "suppression n < " + D.minCell].filter(Boolean).join("  ·  ")
-    : "127.0.0.1 · loopback · nothing leaves this machine";
-  render();
-}
-
-window.gen = async key => {
-  const r = await j("/api/generate", {analysis:key});
-  $("#genmsg").innerHTML = r.ok
-    ? '<p class="msg">Wrote <code>' + esc(r.path) + '</code></p>'
-    : '<p class="msg bad">' + esc(r.message) + '</p>';
-  if (r.ok) { await refresh(); }
-};
-
-window.runIt = async () => {
-  const m = $("#mod").value;
-  $("#out").innerHTML = '<p class="msg">Running…</p>';
-  const r = await j("/api/run", {module:m});
-  $("#out").innerHTML = '<pre>' + esc(r.output) + '</pre>' +
-    '<div class="row"><button class="copy" onclick="copy(this, ' +
-    JSON.stringify(r.output).replace(/"/g,"&quot;") + ')">copy output</button></div>' +
-    '<p class="msg">Synthetic data — these are not results.</p>';
-};
-
-window.recheck = async () => {
-  const r = await j("/api/checks");
-  $("#out").innerHTML = r.findings.length
-    ? '<div class="diag">' + r.findings.map(f =>
-        '<div class="' + (f.level === "BLOCK" ? "b" : "w") + '">' + f.level + "  " +
-        esc(f.path) + (f.line ? ":" + f.line : "") + "  " + esc(f.message) +
-        (f.fix ? '<br>&nbsp;&nbsp;&nbsp;→ ' + esc(f.fix) : "") + '</div>').join("") + '</div>'
-    : '<div class="diag"><div class="g">✓ All checks passed</div></div>';
-  await refresh();
-};
-
-window.ask2 = async text => {
-  const q = (text || "").trim();
-  if (!q) return;
-  if (TAB !== 2) { TAB = 2; render(); }
-  if ($("#q")) $("#q").value = "";
-  add("you", esc(q));
-  const pending = add("copilot", "…");
-  const r = await j("/api/chat", {message:q});
-  pending.innerHTML = '<div class="who">assistant</div>' +
-    (r.steps && r.steps.length
-      ? '<div class="steps">' + r.steps.map(s => "· " + esc(s.label)).join("<br>") + '</div>'
-      : '') + '<div class="t">' + esc(r.reply || r.error) + '</div>' +
-    '<div class="row"><button class="copy" onclick="copy(this, ' +
-    JSON.stringify(r.reply || "").replace(/"/g,"&quot;") + ')">copy</button></div>';
-  S = await j("/api/status");
-};
-
-function add(who, html){
-  const el = document.createElement("div");
-  el.className = "turn";
-  el.innerHTML = '<div class="who">' + who + '</div><div class="t">' + html + '</div>';
-  $("#log").appendChild(el);
-  $("#log").scrollTop = $("#log").scrollHeight;
-  return el;
-}
-
-refresh();
-</script></body></html>
-'''
+PAGE = build_page()

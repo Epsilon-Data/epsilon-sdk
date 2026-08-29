@@ -33,12 +33,25 @@ class TestPageIsValid:
         assert script.count("{") == script.count("}")
         assert script.count("(") == script.count(")")
 
-    def test_it_loads_nothing_from_the_network(self):
-        """It must work on a machine with no outbound access."""
+    def test_no_external_script_or_stylesheet_beyond_fonts(self):
+        """A workspace inside a TRE may have no outbound access at all. The
+        design asks for IBM Plex, which is allowed to fail: every font stack
+        names a system fallback, so the page still renders."""
         head = PAGE.split("<script>")[0]
-        assert "src=" not in head
-        assert "//fonts." not in PAGE
+        assert "<script src=" not in head
         assert "cdn" not in PAGE.lower()
+        external = [l for l in head.splitlines()
+                    if "href=\"http" in l and "fonts.google" not in l
+                    and "fonts.gstatic" not in l]
+        assert external == [], external
+        assert "system-ui" in PAGE  # the fallback the design declares
+
+    def test_every_font_stack_has_a_local_fallback(self):
+        import re as _re
+        for stack in _re.findall(r"font-family:\s*([^;\"']+)", PAGE):
+            if "IBM Plex" in stack:
+                assert ("system-ui" in stack or "sans-serif" in stack
+                        or "monospace" in stack), stack
 
     def test_every_endpoint_the_page_calls_is_routed(self):
         """A path the page fetches but the server does not route returns 404
@@ -50,7 +63,8 @@ class TestPageIsValid:
         routed = inspect.getsource(ui.make_handler)
         missing = sorted(p for p in called if '"{0}"'.format(p) not in routed)
         assert not missing, missing
-        assert len(called) >= 6
+        assert {"/api/status", "/api/dataset", "/api/analyses",
+                "/api/chat"} <= called
 
 
 class TestPayloads:
@@ -204,3 +218,45 @@ class TestGenerateAndRun:
 
     def test_run_reports_a_missing_module(self, dataset_dir):
         assert "does not exist" in run_module(str(dataset_dir), "nope.py")["output"]
+
+
+class TestDesignFidelity:
+    """The page is the design canvas's markup, rendered with live data. These
+    guard the seam: if the design is re-exported, the markup changes and the
+    bindings it needs must still be supplied."""
+
+    def test_the_markup_is_the_designs_own(self):
+        from sdk import ui_page
+        assert "IBM Plex" in ui_page.MARKUP
+        assert ui_page.MARKUP.count("<sc-for") == 19
+        assert ui_page.MARKUP.count("<sc-if") == 27
+
+    def test_the_designs_value_derivation_is_used_unmodified(self):
+        from sdk import ui_page
+        assert ui_page.RENDER_VALS.startswith("renderVals()")
+        assert "verdictStyle" in ui_page.RENDER_VALS
+
+    def test_every_data_method_renderVals_calls_is_implemented(self):
+        """renderVals calls into the component; each of those must exist or the
+        page renders blank."""
+        import re
+
+        from sdk import ui_page
+        called = set(re.findall(r"this\.(\w+)\(", ui_page.RENDER_VALS))
+        defined = set(re.findall(r"^  (\w+)\(", ui_page.RUNTIME, re.M))
+        defined |= {"setState", "go", "pick", "runStep", "send", "renderVals"}
+        missing = sorted(called - defined)
+        assert not missing, missing
+
+    def test_the_one_hardcoded_count_became_a_binding(self):
+        from sdk.ui import PAGE
+        assert "{{ grantedCount }} columns" in PAGE
+        assert "&mdash; 10 columns" not in PAGE
+
+    def test_fixtures_from_the_mockup_do_not_reach_the_page(self):
+        """The design shipped with invented sample content. None of it should
+        survive into a page a researcher reads as fact."""
+        from sdk.ui import PAGE
+        for fixture in ("nordic-icu-2019", "icu_encounter_v3", "41,208",
+                        "r.halvorsen@ki.se", "mrn", "clinician_id"):
+            assert fixture not in PAGE, fixture
