@@ -613,3 +613,51 @@ class TestProjectsPage:
         finally:
             server.shutdown()
             server.server_close()
+
+
+class TestEntryPoint:
+    """With no project open, the workspace has nothing to describe."""
+
+    @pytest.fixture(autouse=True)
+    def isolated_home(self, tmp_path, monkeypatch):
+        import os
+        home = tmp_path / "home"
+        real = os.path.expanduser
+
+        def fake(path):
+            if path == "~" or path.startswith("~/"):
+                return str(home) + path[1:]
+            return real(path)
+
+        monkeypatch.setattr(os.path, "expanduser", fake)
+
+    def _serve(self, profile, directory):
+        import threading
+        server, _url = serve(profile, str(directory), session=None,
+                             port=0, open_browser=False)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return server, "http://127.0.0.1:{0}".format(server.server_address[1])
+
+    def test_root_leads_to_projects_when_nothing_is_open(self, tmp_path):
+        server, base = self._serve(None, tmp_path)
+        try:
+            body = urllib.request.urlopen(base + "/").read().decode()
+            assert "<title>Epsilon projects</title>" in body
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_root_is_the_workspace_once_a_project_is_open(self, profile,
+                                                          dataset_dir):
+        server, base = self._serve(profile, dataset_dir)
+        try:
+            body = urllib.request.urlopen(base + "/").read().decode()
+            assert "<title>Epsilon workspace</title>" in body
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_the_workspace_link_is_hidden_until_there_is_a_projection(self):
+        """Otherwise it sends the researcher straight back here."""
+        from sdk.projects_page import PAGE as PROJECTS_PAGE
+        assert "p.initialised" in PROJECTS_PAGE

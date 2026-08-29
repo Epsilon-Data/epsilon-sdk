@@ -362,7 +362,11 @@ function homeHtml(p) {
     '<section>' +
       '<h2>Project</h2>' +
       '<div class="actions">' +
-        '<a class="ghost" style="text-decoration:none" href="/">Open the workspace</a>' +
+        // The workspace describes a projection, so it is only offered once
+        // there is one; otherwise it would bounce straight back here.
+        (p.initialised
+          ? '<a class="ghost" style="text-decoration:none" href="/">Open the workspace</a>'
+          : '') +
         '<button class="ghost" data-forget="' + esc(p.id) + '">Forget this project</button>' +
       '</div>' +
       '<p class="note">Forgetting removes it from this list only. The ' +

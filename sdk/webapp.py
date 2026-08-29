@@ -37,13 +37,17 @@ def available() -> bool:
 def build(space: Workspace):
     """A FastAPI app serving the workspace, with the chat mounted at /chat."""
     from fastapi import FastAPI, Request
-    from fastapi.responses import HTMLResponse, JSONResponse
+    from fastapi.responses import (HTMLResponse, JSONResponse,
+                                   RedirectResponse)
 
     app = FastAPI(title="Epsilon workspace", docs_url=None, redoc_url=None)
 
     @app.get("/", response_class=HTMLResponse)
     @app.get("/index.html", response_class=HTMLResponse)
     async def page():
+        # With no project open the workspace has nothing to describe.
+        if not space.ready:
+            return RedirectResponse("/projects")
         return HTMLResponse(ui_mod.PAGE)
 
     @app.get("/projects", response_class=HTMLResponse)
