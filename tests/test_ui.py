@@ -694,3 +694,56 @@ class TestSetupSteps:
         assert payload["steps"]
         for step in payload["steps"]:
             assert "cmd" in step and "done" in step and "title" in step
+
+
+class TestProjectCookie:
+    """The chat files each thread under the project the cookie names."""
+
+    @pytest.fixture(autouse=True)
+    def isolated_home(self, tmp_path, monkeypatch):
+        import os
+        home = tmp_path / "home"
+        real = os.path.expanduser
+
+        def fake(path):
+            if path == "~" or path.startswith("~/"):
+                return str(home) + path[1:]
+            return real(path)
+
+        monkeypatch.setattr(os.path, "expanduser", fake)
+
+    @pytest.fixture(autouse=True)
+    def no_model(self, monkeypatch):
+        def refuse(*a, **kw):
+            raise RuntimeError("no model")
+        monkeypatch.setattr("sdk.llm.get_provider", refuse)
+        monkeypatch.setattr("sdk.llm.available", lambda: False)
+
+    def test_opening_a_project_sets_the_cookie(self, profile, dataset_dir):
+        client = make_client(profile, dataset_dir)
+        client.post("/api/projects/new",
+                    json={"name": "Cohort", "path": str(dataset_dir)})
+        res = client.post("/api/projects/open", json={"id": "cohort"})
+        assert res.cookies.get("epsilon_project") == "cohort"
+
+    def test_the_workspace_sets_the_cookie(self, profile, dataset_dir):
+        from sdk import projects as registry
+        registry.add("Cohort", str(dataset_dir))
+        client = make_client(profile, dataset_dir)
+        res = client.get("/workspace?p=cohort")
+        assert "epsilon_project=cohort" in res.headers.get("set-cookie", "") \
+            or client.cookies.get("epsilon_project") == "cohort"
+
+    def test_the_assistant_redirect_sets_the_cookie(self, profile,
+                                                    dataset_dir):
+        from sdk import projects as registry
+        registry.add("Cohort", str(dataset_dir))
+        client = make_client(profile, dataset_dir)
+        res = client.get("/assistant", follow_redirects=False)
+        assert res.headers["location"] == "/chat?p=cohort"
+        assert "epsilon_project=cohort" in res.headers.get("set-cookie", "")
+
+    def test_no_project_open_means_no_cookie(self, tmp_path):
+        client = make_client(None, tmp_path)
+        res = client.get("/assistant", follow_redirects=False)
+        assert "epsilon_project" not in res.headers.get("set-cookie", "")

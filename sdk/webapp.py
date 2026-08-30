@@ -64,7 +64,9 @@ def build(space: Workspace):
             return RedirectResponse("/workspace?p=" + space.project.id)
         if not space.ready:
             return RedirectResponse("/")
-        return HTMLResponse(ui_mod.PAGE)
+        response = HTMLResponse(ui_mod.PAGE)
+        _remember_project(response)
+        return response
 
     @app.get("/api/dataset")
     async def dataset():
@@ -94,7 +96,9 @@ def build(space: Workspace):
         """The workspace's Assistant screen: the Chainlit chat, told which
         project it is about."""
         if space.project is not None:
-            return RedirectResponse("/chat?p=" + space.project.id)
+            response = RedirectResponse("/chat?p=" + space.project.id)
+            _remember_project(response)
+            return response
         return RedirectResponse("/chat")
 
     @app.get("/api/projects")
@@ -157,7 +161,18 @@ def build(space: Workspace):
     async def project_routes(request: Request):
         body = await _body(request)
         payload, code = ui_mod.project_route(space, request.url.path, body)
-        return JSONResponse(payload, status_code=code)
+        response = JSONResponse(payload, status_code=code)
+        _remember_project(response)
+        return response
+
+    def _remember_project(response) -> None:
+        """Leave the open project's id where the chat's login can read it,
+        so its threads are filed under this project."""
+        from sdk.chat_history import COOKIE
+
+        if space.project is not None:
+            response.set_cookie(COOKIE, space.project.id, path="/",
+                                samesite="lax")
 
     async def _body(request: Request) -> Dict[str, Any]:
         try:
@@ -208,6 +223,12 @@ def mount(app, project_dir: str):
     """Attach the Chainlit chat at /chat."""
     from chainlit.utils import mount_chainlit
 
+    from sdk import chat_history
+
+    # Session history: the secret Chainlit's auth requires, and the thread
+    # tables its data layer expects, both ready before the app loads.
+    chat_history.ensure_secret()
+    chat_history.ensure_schema()
     _materialise_elements()
     target = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           "chat_app.py")
@@ -230,6 +251,9 @@ def serve(space: Workspace, port: int, open_browser: bool = True):
     # leaves the caller thinking a server is up. Claim the port first so a
     # clash surfaces as the OSError the CLI already knows how to explain.
     probe = socket.socket()
+    # Match uvicorn's own bind semantics: a socket lingering in TIME_WAIT
+    # after a restart must not read as "port taken".
+    probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
         probe.bind(("127.0.0.1", port))
     finally:

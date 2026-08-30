@@ -19,6 +19,7 @@ from typing import List, Optional
 import chainlit as cl
 
 from sdk import catalogue as catalogue_mod
+from sdk import chat_history
 from sdk import profile as profile_mod
 from sdk import workspace as workspace_mod
 from sdk.agent import Session
@@ -27,6 +28,72 @@ from sdk.profile import Profile
 # The project the researcher started us in. Set by `epsilon start`; falls back
 # to the working directory so `chainlit run sdk/chat_app.py` also works.
 PROJECT_DIR = os.environ.get("EPSILON_PROJECT_DIR", ".")
+
+
+@cl.data_layer
+def _threads():
+    """Per-project session history, in one local SQLite file."""
+    from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
+
+    chat_history.ensure_schema()
+    return SQLAlchemyDataLayer(conninfo=chat_history.conninfo())
+
+
+@cl.header_auth_callback
+async def _local_researcher(headers):
+    """There is one researcher, and the 'user' is the project.
+
+    The workspace pages leave the open project's id in a cookie; filing each
+    thread under it is what makes the sidebar list only that project's
+    sessions. No password: this server binds to loopback.
+    """
+    project_id = chat_history.project_from_cookie(headers.get("cookie") or "")
+    return cl.User(identifier=chat_history.identity_for(project_id),
+                   metadata={"project": project_id})
+
+
+@cl.on_chat_resume
+async def resume(thread):
+    """Reopen an old session with its recent conversation as context.
+
+    Chainlit redraws the transcript itself; what needs rebuilding is the
+    agent -- a fresh Session for the thread's project, with the recent
+    messages in its history so a follow-up question lands in context.
+    """
+    project_id = chat_history.project_from_identity(
+        thread.get("userIdentifier") or "")
+    directory = PROJECT_DIR
+    if project_id:
+        try:
+            from sdk import projects as registry
+            named = registry.get(project_id)
+            if named is not None:
+                directory = named.path
+        except Exception:
+            pass
+
+    profile = _load(directory)
+    if profile is None:
+        await cl.Message(content=(
+            "**This project has no projection any more.** Run `epsilon init "
+            "<dataset_id>` in {0}, then reopen this session.".format(
+                directory))).send()
+        return
+
+    try:
+        from sdk import llm
+        provider = llm.get_provider(llm.TIER_A, "the assistant")
+    except Exception as exc:
+        await cl.Message(content=(
+            "**No model configured.** {0}".format(exc))).send()
+        return
+
+    session = Session.create(provider, profile, project_dir=directory)
+    from sdk.llm.base import Turn
+    for role, text in chat_history.resume_context(thread):
+        session.history.append(Turn(role, text=text))
+    cl.user_session.set("session", session)
+    cl.user_session.set("profile", profile)
 
 
 def _load(directory: Optional[str] = None) -> Optional[Profile]:

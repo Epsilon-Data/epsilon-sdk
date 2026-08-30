@@ -135,6 +135,11 @@ def test_the_researchers_whole_path(tmp_path, monkeypatch):
         # -- the chat is mounted and its chart element is served ---------
         status, body = _get(base + "chat/")
         assert status == 200
+        # -- session history: the auth secret and thread db exist --------
+        assert os.path.exists(os.path.join(
+            os.path.expanduser("~"), ".epsilon_sdk", "chat.db"))
+        assert os.environ.get("CHAINLIT_AUTH_SECRET")
+
         for element in ("BarChart", "PieChart"):
             status, body = _get(
                 base + "chat/public/elements/" + element + ".jsx")

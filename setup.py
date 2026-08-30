@@ -27,7 +27,8 @@ setup(
         'copilot': ['keyring>=23.0'],
         # The chat UI. Heavy -- pulls FastAPI, uvicorn and ~140 packages --
         # so it stays out of the default install.
-        'chat': ['chainlit>=2.12'],
+        'chat': ['chainlit>=2.12', 'SQLAlchemy>=2.0', 'aiosqlite>=0.19',
+                 'greenlet>=3.0'],
     },
     entry_points={
         'console_scripts': [
