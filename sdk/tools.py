@@ -387,8 +387,13 @@ class Toolbox(object):
         report["levels_suppressed"] = len(counts) - len(common)
         return json.dumps(report, indent=2)
 
-    def run_analysis(self, module: str) -> str:
-        """Execute one analysis module locally against the synthetic data."""
+    def run_analysis(self, module: str, chart: str = "bar") -> str:
+        """Execute one analysis module locally against the synthetic data.
+
+        `chart` says how the chat draws a captured series: "bar" (default)
+        or "pie" for parts of a whole. The numbers are the released result's
+        either way; only the drawing changes.
+        """
         relative = module if module.endswith(".py") else module.replace(".", os.sep) + ".py"
         full = self._resolve(relative)
         if not os.path.exists(full):
@@ -436,6 +441,7 @@ class Toolbox(object):
                 continue
             if series:
                 series["source"] = relative
+                series["kind"] = chart if chart in ("bar", "pie") else "bar"
                 self.charts.append(series)
                 # Tell the model the chart is already in front of the
                 # researcher, or it points them at an .svg file instead.
@@ -559,11 +565,17 @@ def build_tools(box: Toolbox) -> List[Tool]:
 
         Tool(spec("run_analysis",
                   "Run an analysis module locally against the synthetic data "
-                  "and return what main() produced, or the traceback.",
+                  "and return what main() produced, or the traceback. A "
+                  "result with a plottable series is charted to the "
+                  "researcher automatically.",
                   {"module": {"type": "string",
-                              "description": "e.g. analyses/cross_tab.py"}},
+                              "description": "e.g. analyses/cross_tab.py"},
+                   "chart": {"type": "string", "enum": ["bar", "pie"],
+                             "description": "How the chart is drawn: bar "
+                                            "(default), or pie for parts of "
+                                            "a whole."}},
                   ["module"]),
-             lambda module: box.run_analysis(module),
+             lambda module, chart="bar": box.run_analysis(module, chart),
              lambda args, out: "run_analysis({0})".format(args.get("module"))),
 
         Tool(spec("run_checks",

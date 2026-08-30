@@ -205,7 +205,8 @@ async def _send_charts(session: Session) -> None:
                      for value, count in g["pairs"]],
         } for g in chart["groups"]]
 
-        element = cl.CustomElement(name="BarChart", props={
+        name = "PieChart" if chart.get("kind") == "pie" else "BarChart"
+        element = cl.CustomElement(name=name, props={
             "title": chart["title"],
             "caption": chart["source"],
             "groups": groups,

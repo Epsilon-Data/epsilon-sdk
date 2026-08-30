@@ -285,3 +285,40 @@ class TestChartExtraction:
         box.run_analysis("describe.py")
         assert len(box.charts) == 1
         assert box.charts[0]["source"] == "analyses/describe.py"
+
+
+class TestChartKind:
+    """The researcher picks the drawing; the numbers stay the released ones."""
+
+    def test_run_analysis_tags_the_captured_series(self, box):
+        import json
+        import os
+        os.makedirs(os.path.join(box.project_dir, "analyses"), exist_ok=True)
+        with open(os.path.join(box.project_dir, "analyses", "tiny.py"), "w",
+                  encoding="utf-8") as fh:
+            fh.write("def main():\n"
+                     "    return {'table': [{'g': 'a', 'x': 'F', 'n': 30},\n"
+                     "                      {'g': 'a', 'x': 'M', 'n': 20}]}\n")
+        box.run_analysis("analyses/tiny.py", chart="pie")
+        assert box.charts
+        assert box.charts[-1]["kind"] == "pie"
+
+    def test_an_unknown_kind_falls_back_to_bar(self, box):
+        import os
+        os.makedirs(os.path.join(box.project_dir, "analyses"), exist_ok=True)
+        with open(os.path.join(box.project_dir, "analyses", "tiny2.py"), "w",
+                  encoding="utf-8") as fh:
+            fh.write("def main():\n"
+                     "    return {'table': [{'g': 'a', 'x': 'F', 'n': 30},\n"
+                     "                      {'g': 'a', 'x': 'M', 'n': 20}]}\n")
+        box.run_analysis("analyses/tiny2.py", chart="donut")
+        assert box.charts[-1]["kind"] == "bar"
+
+    def test_the_tool_schema_offers_the_choice(self, box):
+        """The model learns about pie from the schema, not from a prompt."""
+        from sdk.tools import build_tools
+        spec = next(t.spec for t in build_tools(box)
+                    if t.spec.name == "run_analysis")
+        chart = spec.schema["properties"]["chart"]
+        assert chart["enum"] == ["bar", "pie"]
+        assert "chart" not in spec.schema.get("required", [])

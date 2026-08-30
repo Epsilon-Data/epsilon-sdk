@@ -135,9 +135,11 @@ def test_the_researchers_whole_path(tmp_path, monkeypatch):
         # -- the chat is mounted and its chart element is served ---------
         status, body = _get(base + "chat/")
         assert status == 200
-        status, body = _get(base + "chat/public/elements/BarChart.jsx")
-        assert status == 200
-        assert "BarChart" in body or "props" in body
+        for element in ("BarChart", "PieChart"):
+            status, body = _get(
+                base + "chat/public/elements/" + element + ".jsx")
+            assert status == 200
+            assert element in body
     finally:
         server.should_exit = True
         thread.join(timeout=15)

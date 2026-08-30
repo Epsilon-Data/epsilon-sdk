@@ -253,9 +253,14 @@ class TestCharts:
     def test_the_helper_needs_no_third_party_package(self):
         from sdk.snippets import CHART_MODULE
         tree = ast.parse(CHART_MODULE)
-        imported = [n for n in ast.walk(tree)
-                    if isinstance(n, (ast.Import, ast.ImportFrom))]
-        assert imported == [], "chart helper must be stdlib-only"
+        names = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names += [a.name.split(".")[0] for a in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                names.append((node.module or "").split(".")[0])
+        assert set(names) <= {"math"}, \
+            "chart helper must be stdlib-only, found: {0}".format(names)
 
     def test_the_helper_passes_the_submission_checks(self):
         from sdk.checks import check_source
@@ -277,3 +282,37 @@ class TestCharts:
         for key in ("describe", "composition", "cross_tab"):
             code = render(profile, SPECS_BY_KEY[key].evaluate(profile), chart=True)
             assert [f for f in check_source("a.py", code) if f.blocking] == []
+
+
+class TestPieChart:
+    """A pie is parts of a whole, and a whole leaks."""
+
+    def _module(self):
+        import types
+
+        from sdk.snippets import CHART_MODULE
+        mod = types.ModuleType("charts_under_test")
+        exec(compile(CHART_MODULE, "_charts.py", "exec"), mod.__dict__)
+        return mod
+
+    def test_the_helper_ships_with_the_chart_module(self):
+        assert hasattr(self._module(), "pie_chart")
+
+    def test_draws_shares_of_released_values(self):
+        svg = self._module().pie_chart("Gender", [("F", 3752), ("M", 1536)])
+        assert "<svg" in svg
+        assert "71.0%" in svg or "70.9%" in svg
+
+    def test_a_withheld_slice_is_excluded_not_drawn_small(self):
+        """A gap in a circle is readable; a withheld value must leave none."""
+        svg = self._module().pie_chart(
+            "Gender", [("F", 3752), ("M", 1536), ("X", None)])
+        assert "1 withheld" in svg
+        assert "shares of released values only" in svg
+
+    def test_a_single_level_is_a_circle_not_a_degenerate_arc(self):
+        assert "circle" in self._module().pie_chart("One", [("Only", 10)])
+
+    def test_nothing_releasable_refuses_to_draw(self):
+        assert "nothing releasable" in self._module().pie_chart(
+            "Nothing", [("A", None)])

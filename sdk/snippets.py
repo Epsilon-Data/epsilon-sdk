@@ -422,6 +422,71 @@ def bar_chart(title, rows, width=720, note=None):
     return "\\n".join(out)
 
 
+def pie_chart(title, rows, width=380, note=None):
+    """Render (label, value) pairs as a pie of the RELEASED values.
+
+    A pie is parts of a whole, and a whole leaks: a withheld slice could be
+    read straight off the gap it leaves. Rows whose value is None are
+    therefore excluded from the circle entirely, counted, and named in the
+    caption -- the shares drawn are shares of what was released.
+    """
+    import math
+
+    rows = list(rows)
+    shown = [(label, v) for label, v in rows if v is not None]
+    withheld = len(rows) - len(shown)
+    total = sum(v for _label, v in shown)
+    if not shown or not total:
+        return _empty(title, width, "nothing releasable to plot")
+
+    radius, cx, cy = 70, 90, 96
+    palette = [ACCENT, "#6fb8a8", "#a8cfc6", "#cfe3dd", "#e3ded4", "#8a7f6e"]
+    height = max(cy + radius + 30, 60 + len(shown) * 18) + (18 if note or withheld else 0)
+
+    out = [
+        '<svg xmlns="http://www.w3.org/2000/svg" width="{0}" height="{1}" '
+        'viewBox="0 0 {0} {1}" font-family="ui-sans-serif, system-ui, sans-serif">'
+        .format(width, height),
+        '<text x="16" y="24" font-size="14" font-weight="600" fill="{0}">{1}</text>'
+        .format(INK, _escape(title)),
+    ]
+
+    angle = -math.pi / 2
+    for i, (label, value) in enumerate(shown):
+        share = float(value) / total
+        start, angle = angle, angle + share * 2 * math.pi
+        colour = palette[i % len(palette)]
+        if share >= 0.999:
+            out.append('<circle cx="{0}" cy="{1}" r="{2}" fill="{3}"/>'.format(
+                cx, cy, radius, colour))
+        else:
+            x1, y1 = cx + radius * math.cos(start), cy + radius * math.sin(start)
+            x2, y2 = cx + radius * math.cos(angle), cy + radius * math.sin(angle)
+            large = 1 if share > 0.5 else 0
+            out.append(
+                '<path d="M {0} {1} L {2:.2f} {3:.2f} A {4} {4} 0 {5} 1 '
+                '{6:.2f} {7:.2f} Z" fill="{8}"/>'.format(
+                    cx, cy, x1, y1, radius, large, x2, y2, colour))
+        y = 60 + i * 18
+        out.append('<rect x="{0}" y="{1}" width="10" height="10" rx="2" '
+                   'fill="{2}"/>'.format(cx + radius + 24, y - 9, colour))
+        out.append(
+            '<text x="{0}" y="{1}" font-size="11" fill="{2}">{3} — {4:,} '
+            '({5:.1f}%)</text>'.format(
+                cx + radius + 40, y, INK, _escape(str(label))[:24], value,
+                100.0 * share))
+
+    footer = "shares of released values only"
+    if withheld:
+        footer += " — {0} withheld".format(withheld)
+    if note:
+        footer += "; " + note
+    out.append('<text x="16" y="{0}" font-size="11" fill="{1}">{2}</text>'
+               .format(height - 8, MUTED, _escape(footer)))
+    out.append("</svg>")
+    return "\\n".join(out)
+
+
 def _empty(title, width, message):
     return (\'<svg xmlns="http://www.w3.org/2000/svg" width="{0}" height="80">\'
             \'<text x="16" y="30" font-size="14">{1}</text>\'
