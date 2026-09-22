@@ -25,20 +25,20 @@ def home(tmp_path, monkeypatch):
 
 class TestKeyResolution:
     def test_environment_wins(self, home, monkeypatch):
-        monkeypatch.setattr(ai_config, "_key_from_keyring", lambda: "from-ring")
+        monkeypatch.setattr(ai_config, "stored_key", lambda: "from-ring")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "from-env")
         cfg = ai_config.load()
         assert cfg.api_key == "from-env"
         assert cfg.key_source == "env:ANTHROPIC_API_KEY"
 
     def test_keyring_is_used_when_the_environment_is_empty(self, home, monkeypatch):
-        monkeypatch.setattr(ai_config, "_key_from_keyring", lambda: "from-ring")
+        monkeypatch.setattr(ai_config, "stored_key", lambda: "from-ring")
         cfg = ai_config.load()
         assert cfg.api_key == "from-ring"
         assert cfg.key_source == "keyring"
 
     def test_the_config_file_is_the_last_resort(self, home, monkeypatch):
-        monkeypatch.setattr(ai_config, "_key_from_keyring", lambda: None)
+        monkeypatch.setattr(ai_config, "stored_key", lambda: None)
         ai_config.save("anthropic", "claude-sonnet-5", None, "A")
         path = ai_config.config_path()
         with open(path, "a", encoding="utf-8") as fh:
@@ -48,7 +48,7 @@ class TestKeyResolution:
         assert cfg.key_source == "config file"
 
     def test_no_key_is_not_an_error(self, home, monkeypatch):
-        monkeypatch.setattr(ai_config, "_key_from_keyring", lambda: None)
+        monkeypatch.setattr(ai_config, "stored_key", lambda: None)
         cfg = ai_config.load()
         assert cfg.api_key is None
         assert cfg.configured is False
@@ -102,7 +102,7 @@ class TestTiers:
             llm.get_provider(llm.TIER_A, "code generation")
 
     def test_get_provider_explains_when_nothing_is_configured(self, home, monkeypatch):
-        monkeypatch.setattr(ai_config, "_key_from_keyring", lambda: None)
+        monkeypatch.setattr(ai_config, "stored_key", lambda: None)
         from sdk import llm
         with pytest.raises(NoModelConfigured) as exc:
             llm.get_provider(llm.TIER_C, "suggestions")

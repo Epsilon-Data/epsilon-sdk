@@ -1,9 +1,8 @@
 """Tests for the local submission checks."""
-import os
 
 import pytest
 
-from sdk.checks import (BLOCK, WARN, check_project, check_requirements,
+from sdk.checks import (WARN, check_project, check_requirements,
                         check_packaging, check_source, local_modules,
                         scan_secrets, should_scan_secrets, summarise)
 

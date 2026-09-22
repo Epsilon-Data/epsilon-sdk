@@ -123,8 +123,10 @@ def structured(provider: Provider, system: str, prompt: str,
                                           force_tool=tool_name, max_tokens=max_tokens)
             else:
                 reply = provider.complete(system, messages, max_tokens=max_tokens)
-        except LLMError:
-            if attempt + 1 >= max_attempts:
+        except LLMError as exc:
+            # Removing tools cannot resolve billing, access or network errors.
+            # Do not immediately repeat a rate-limited request either.
+            if exc.reason not in (None, "request") or attempt + 1 >= max_attempts:
                 raise
             continue
 

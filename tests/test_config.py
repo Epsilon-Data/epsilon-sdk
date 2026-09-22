@@ -42,3 +42,17 @@ class TestConfig:
         """Test credentials configuration"""
         assert config.CREDENTIALS_DIR == ".epsilon_sdk"
         assert config.CREDENTIALS_FILE == "credentials.ini"
+
+def test_saved_server_is_used_at_startup_and_the_environment_still_wins(tmp_path):
+    import subprocess, sys
+    state = tmp_path / ".epsilon_sdk"
+    state.mkdir()
+    (state / "server").write_text("https://saved.example\n")
+    probe = [sys.executable, "-c", "from sdk import config; print(config.BASE_URL)"]
+    env = {"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"}
+    assert subprocess.run(probe, env=env, capture_output=True, text=True, check=True).stdout.strip() == "https://saved.example"
+    env["EPSILON_SERVER_URL"] = "https://from-env.example/"
+    assert subprocess.run(probe, env=env, capture_output=True, text=True, check=True).stdout.strip() == "https://from-env.example"
+    (state / "server").unlink()
+    del env["EPSILON_SERVER_URL"]
+    assert subprocess.run(probe, env=env, capture_output=True, text=True, check=True).stdout.strip() == "https://app.epsilon-data.org"

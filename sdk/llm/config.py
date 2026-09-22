@@ -14,7 +14,8 @@ from __future__ import annotations
 
 import configparser
 import os
-from dataclasses import dataclass
+from urllib.parse import urlparse
+from dataclasses import dataclass, field
 from typing import Optional
 
 from sdk.config import CREDENTIALS_DIR
@@ -56,6 +57,25 @@ TIER_C = "C"  # small local: prose and summarisation only
 TIER_ORDER = {TIER_C: 0, TIER_B: 1, TIER_A: 2}
 
 
+LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "::1")
+
+
+def check_base_url(url: Optional[str]) -> Optional[str]:
+    """Why an endpoint URL is unacceptable, or None when it is fine.
+
+    Prompts and schema metadata travel to this endpoint, so a remote one must
+    use HTTPS; plain HTTP is accepted only for a model on this machine.
+    """
+    if not url:
+        return None
+    parsed = urlparse(url)
+    if parsed.username or parsed.password or parsed.query or parsed.fragment or not parsed.hostname:
+        return "Use an endpoint URL without credentials, query parameters or fragments."
+    if parsed.scheme != "https" and not (parsed.scheme == "http" and parsed.hostname in LOOPBACK_HOSTS):
+        return "Use HTTPS for remote model endpoints; HTTP is allowed only on loopback."
+    return None
+
+
 def tier_at_least(configured: str, required: str) -> bool:
     return TIER_ORDER.get(configured, -1) >= TIER_ORDER.get(required, 99)
 
@@ -66,7 +86,8 @@ class AIConfig:
     model: str = DEFAULT_MODELS[PROVIDER_ANTHROPIC]
     base_url: Optional[str] = None
     tier: str = TIER_A
-    api_key: Optional[str] = None
+    # Kept out of repr so a logged config or a traceback never shows the key.
+    api_key: Optional[str] = field(default=None, repr=False)
     key_source: Optional[str] = None
 
     @property
@@ -93,7 +114,7 @@ def config_path() -> str:
 
 # -- keyring, if the platform offers one -----------------------------------
 
-def _keyring():
+def keyring_backend():
     """Import keyring lazily; it is an optional convenience, not a dependency."""
     try:
         import keyring  # type: ignore
@@ -102,13 +123,9 @@ def _keyring():
         return None
 
 
-def keyring_available() -> bool:
-    return _keyring() is not None
-
-
 def store_key(api_key: str) -> str:
     """Persist the key as securely as this machine allows. Returns where."""
-    ring = _keyring()
+    ring = keyring_backend()
     if ring is not None:
         try:
             ring.set_password(KEYRING_SERVICE, KEYRING_ACCOUNT, api_key)
@@ -119,7 +136,7 @@ def store_key(api_key: str) -> str:
 
 
 def delete_key() -> bool:
-    ring = _keyring()
+    ring = keyring_backend()
     if ring is None:
         return False
     try:
@@ -129,8 +146,8 @@ def delete_key() -> bool:
         return False
 
 
-def _key_from_keyring() -> Optional[str]:
-    ring = _keyring()
+def stored_key() -> Optional[str]:
+    ring = keyring_backend()
     if ring is None:
         return None
     try:
@@ -174,7 +191,7 @@ def load(include_key: bool = True) -> AIConfig:
         config.api_key, config.key_source = from_env
         return config
 
-    from_ring = _key_from_keyring()
+    from_ring = stored_key()
     if from_ring:
         config.api_key, config.key_source = from_ring, "keyring"
         return config

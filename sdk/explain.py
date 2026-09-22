@@ -10,12 +10,8 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from sdk.profile import AGGREGATE_ONLY, Leaf, Profile
+from sdk.profile import Leaf, Profile
 from sdk.catalogue import Match, evaluate
-
-# Below this many rows per entity the grain is worth stating but not warning
-# about; above it, aggregate statistics are badly distorted by unequal weights.
-AMPLIFICATION_WARN_RATIO = 1.5
 
 # Widest the VALUES column may grow before category lists are elided.
 DOMAIN_WIDTH = 34

@@ -1,5 +1,4 @@
 """CLI tests for the copilot commands."""
-import json
 import os
 
 import pytest
@@ -24,7 +23,7 @@ def no_model(monkeypatch):
     from sdk.llm import config as ai_config
     for name in ai_config.ENV_KEYS:
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr(ai_config, "_key_from_keyring", lambda: None)
+    monkeypatch.setattr(ai_config, "stored_key", lambda: None)
 
 
 class TestExplain:
@@ -178,7 +177,7 @@ class TestAiCommands:
     def test_status_warns_when_an_env_var_shadows_the_keyring(self, monkeypatch):
         from sdk.llm import config as ai_config
         monkeypatch.setenv("EPSILON_LLM_API_KEY", "ollama")
-        monkeypatch.setattr(ai_config, "_key_from_keyring", lambda: "sk-stored")
+        monkeypatch.setattr(ai_config, "stored_key", lambda: "sk-stored")
         result = runner.invoke(app, ["ai", "status"])
         assert "shadowing a key stored in your keyring" in result.output
         assert "unset EPSILON_LLM_API_KEY" in result.output
@@ -186,7 +185,7 @@ class TestAiCommands:
     def test_status_is_quiet_when_nothing_is_shadowed(self, monkeypatch):
         from sdk.llm import config as ai_config
         monkeypatch.setenv("OPENAI_API_KEY", "sk-real")
-        monkeypatch.setattr(ai_config, "_key_from_keyring", lambda: None)
+        monkeypatch.setattr(ai_config, "stored_key", lambda: None)
         result = runner.invoke(app, ["ai", "status"])
         assert "shadowing" not in result.output
 
@@ -246,3 +245,35 @@ class TestCommandSurface:
         import pytest as _pytest
         with _pytest.raises(ImportError):
             import sdk.suggest  # noqa: F401
+
+
+@pytest.mark.parametrize("url,accepted", [
+    (None, True), ("", True), ("https://llm.example.edu/v1", True),
+    ("http://localhost:11434/v1", True), ("http://127.0.0.1:8000/v1", True),
+    ("http://llm.example.edu/v1", False), ("https://user:pass@llm.example.edu", False),
+    ("https://llm.example.edu/v1?key=abc", False), ("not a url", False)])
+def test_cli_and_workspace_share_one_endpoint_rule(url, accepted):
+    from sdk.llm import config as ai_config
+    assert (ai_config.check_base_url(url) is None) == accepted
+
+
+def test_ai_login_refuses_a_remote_plain_http_endpoint(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    result = runner.invoke(app, ["ai", "login", "--provider", "openai-compatible", "--model", "m",
+                                 "--base-url", "http://llm.example.edu/v1", "--tier", "A"])
+    assert result.exit_code == 1 and "HTTPS" in result.output
+    assert not (tmp_path / ".epsilon_sdk" / "config.ini").exists()
+
+
+def test_ai_status_reports_the_workspaces_own_connection_without_touching_it(tmp_path, monkeypatch, no_model):
+    from sdk.workbench.store import Store
+    monkeypatch.setenv("HOME", str(tmp_path))
+    database = tmp_path / ".epsilon_sdk" / "workbench.db"
+    assert "workspace:" not in runner.invoke(app, ["ai", "status"]).output
+    Store(database).set_setting("ai", {"provider": "openai", "model": "gpt-4o", "base_url": None, "tier": "A"})
+    Store(database).set_setting("ai_model", {"provider": "openai", "base_url": None, "model": "gpt-5-mini"})
+    before = database.read_bytes()
+    output = runner.invoke(app, ["ai", "status"]).output
+    assert "workspace: epsilon start uses openai / gpt-5-mini" in output
+    assert "Use existing epsilon ai login settings" in output
+    assert database.read_bytes() == before

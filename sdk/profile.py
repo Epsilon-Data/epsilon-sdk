@@ -171,10 +171,6 @@ class Profile:
     def has_dedupe_key(self) -> bool:
         return bool(self.grain.dedupe_key)
 
-    @property
-    def types_known(self) -> bool:
-        return self.profiled
-
 
 # -- inference -------------------------------------------------------------
 

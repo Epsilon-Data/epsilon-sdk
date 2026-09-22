@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 from .errors import SDKError, AuthenticationError
 from . import config
+from urllib.parse import quote
 
 
 class APIClient:
@@ -16,6 +17,7 @@ class APIClient:
         self.access_token: Optional[str] = None
         self.token_expires_at: Optional[datetime] = None
         self.timeout = config.TIMEOUT
+        self._credentials_path = None
 
     def authenticate(self, username: str, password: str) -> Dict[str, Any]:
         """Authenticate and store access token."""
@@ -61,13 +63,18 @@ class APIClient:
         """Check if client has valid authentication."""
         return (
             self.access_token is not None and
-            (self.token_expires_at is None or datetime.now() < self.token_expires_at)
+            (self.token_expires_at is None or
+             datetime.now(self.token_expires_at.tzinfo) < self.token_expires_at)
         )
 
-    def _make_request(self, method: str, endpoint: str, **kwargs) -> requests.Response:
+    def _make_request(self, method: str, endpoint: str, _refresh_attempted=False, **kwargs) -> requests.Response:
         """Make authenticated request."""
         if not self.is_authenticated():
-            raise AuthenticationError("Not authenticated")
+            if self._credentials_path:
+                from sdk.credentials import refresh_client
+                refresh_client(self, self._credentials_path)
+            else:
+                raise AuthenticationError("Not authenticated")
 
         url = f"{self.base_url}{endpoint}"
         headers = kwargs.get("headers", {})
@@ -77,6 +84,14 @@ class APIClient:
 
         try:
             response = requests.request(method, url, **kwargs)
+
+            if response.status_code == 401:
+                if self._credentials_path and not _refresh_attempted:
+                    from sdk.credentials import refresh_client
+                    response.close()
+                    refresh_client(self, self._credentials_path, force=True)
+                    return self._make_request(method, endpoint, _refresh_attempted=True, **kwargs)
+                raise AuthenticationError("Your Epsilon session has expired. Please sign in again.")
 
             # Check for error response
             if not response.ok:
@@ -118,7 +133,7 @@ class APIClient:
 
     def get_dataset(self, dataset_id: str) -> Dict[str, Any]:
         """Get specific dataset."""
-        endpoint = config.ENDPOINTS['dataset'].format(dataset_id=dataset_id)
+        endpoint = config.ENDPOINTS['dataset'].format(dataset_id=quote(str(dataset_id), safe=""))
         response = self._make_request("GET", endpoint)
         data = response.json()
 
@@ -135,7 +150,7 @@ class APIClient:
         path together with the schema hash and dataset version the server
         reported in the response headers.
         """
-        endpoint = config.ENDPOINTS['synthetic_data'].format(dataset_id=dataset_id)
+        endpoint = config.ENDPOINTS['synthetic_data'].format(dataset_id=quote(str(dataset_id), safe=""))
         response = self._make_request("GET", endpoint, stream=True)
 
         dest_dir = os.path.dirname(dest_path)
@@ -171,12 +186,12 @@ class APIClient:
         }
 
     @classmethod
-    def from_config(cls, config_path: Path):
+    def from_config(cls, config_path: Path, refresh=True):
         """Create client from stored credentials."""
         if not config_path.exists():
             raise AuthenticationError("No credentials found. Please login first.")
 
-        config = configparser.ConfigParser()
+        config = configparser.ConfigParser(interpolation=None)
         config.read(config_path)
 
         # Use 'default' section or first available section
@@ -191,7 +206,11 @@ class APIClient:
             raise AuthenticationError("No access token found. Please login first.")
 
         client = cls()  # Uses default from config
+        if creds.get('server_url') and creds['server_url'].rstrip('/') != client.base_url:
+            raise AuthenticationError("These credentials belong to another Epsilon server. Please sign in again.")
         client.access_token = access_token
+        if creds.get('auth_method') == 'browser':
+            client._credentials_path = config_path
 
         # Set token expiration
         expires_at_str = creds.get('expires_at')
@@ -199,6 +218,13 @@ class APIClient:
             try:
                 client.token_expires_at = datetime.fromisoformat(expires_at_str)
             except ValueError:
-                pass
+                if client._credentials_path:
+                    raise AuthenticationError("Saved Epsilon sign-in is incomplete. Please sign in again.") from None
 
+        if client._credentials_path and client.token_expires_at is None:
+            raise AuthenticationError("Saved Epsilon sign-in is incomplete. Please sign in again.")
+
+        if refresh and client._credentials_path and not client.is_authenticated():
+            from sdk.credentials import refresh_client
+            return refresh_client(client, config_path)
         return client

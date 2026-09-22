@@ -1,4 +1,4 @@
-from setuptools import setup, find_packages
+from setuptools import setup, find_namespace_packages
 import os
 
 # Read version from __version__.py
@@ -10,30 +10,28 @@ setup(
     name="epsilon-sdk",
     version=__version__,
     description="SDK for accessing remote datasets and archetypes",
-    packages=find_packages(),
-    # The chat's custom elements ship with the package and are copied into
-    # the project's public/ at start-up.
-    package_data={'sdk': ['elements/*.jsx']},
+    packages=find_namespace_packages(include=['sdk', 'sdk.*'], exclude=['*.__pycache__']),
+    # The workspace's browser files and the notebook runtime image definition.
+    package_data={'sdk': ['static/workbench/*',
+                          'workbench/runtime/Dockerfile', 'workbench/runtime/worker.py', 'workbench/runtime/requirements.txt']},
     include_package_data=True,
     install_requires=[
         'requests',
         'typer[all]',
-        'pyyaml'
+        'pyyaml',
+        'PyJWT[crypto]>=2.10,<3'
     ],
     extras_require={
         'dev': ['bump-my-version'],
+        'workbench': ['fastapi>=0.115,<1', 'uvicorn>=0.30,<1', 'pydantic>=2.7,<3', 'markdown-it-py>=3,<5'],
         # Optional. Without it the copilot reads its API key from the
         # environment instead; nothing else changes.
-        'copilot': ['keyring>=23.0'],
-        # The chat UI. Heavy -- pulls FastAPI, uvicorn and ~140 packages --
-        # so it stays out of the default install.
-        'chat': ['chainlit>=2.12', 'SQLAlchemy>=2.0', 'aiosqlite>=0.19',
-                 'greenlet>=3.0'],
+        'copilot': ['keyring>=23.0']
     },
     entry_points={
         'console_scripts': [
             'epsilon=sdk.epsilon_cli:app',
         ],
     },
-    python_requires='>=3.7',
+    python_requires='>=3.9',
 )

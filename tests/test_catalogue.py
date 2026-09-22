@@ -6,7 +6,6 @@ precisely so they can be pinned here: an analysis that is wrong for a dataset
 runs cleanly, passes the submission gate and returns attested, so the refusal
 has to be right and has to stay right.
 """
-import copy
 
 import pytest
 

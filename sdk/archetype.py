@@ -3,7 +3,7 @@ import os
 import csv
 import random
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
 
 def extract_fields_from_archetype(obj: Dict, prefix: str = "") -> List[tuple]:
@@ -363,8 +363,8 @@ def compile_archetype(json_file_path: str, output_file: str = "generated_models.
         "def create_dataset(csv_file=None):",
         "    \"\"\"Create a dataset from CSV dummy data\"\"\"",
         "    if csv_file is None:",
-        f"        # Default to dummy CSV file",
-        f"        csv_file = 'generated/data.csv'",
+        "        # Default to dummy CSV file",
+        "        csv_file = 'generated/data.csv'",
         "    ",
         "    if not os.path.exists(csv_file):",
         "        print(f'CSV file not found: {csv_file}')",
@@ -414,11 +414,11 @@ def compile_archetype(json_file_path: str, output_file: str = "generated_models.
 
     print(f"Python classes generated: {output_file}")
     print(f"CSV data source: {csv_file}")
-    print(f"Example usage:")
+    print("Example usage:")
     print(f"    from {os.path.splitext(os.path.basename(output_file))[0]} import create_dataset")
-    print(f"    dataset = create_dataset()  # Loads CSV dummy data automatically")
-    print(f"    print(f'Records: {{len(dataset)}}')")
-    print(f"    for record in dataset:")
+    print("    dataset = create_dataset()  # Loads CSV dummy data automatically")
+    print("    print(f'Records: {len(dataset)}')")
+    print("    for record in dataset:")
 
     # Get the first actual field from properties, not schema metadata
     example_field = "field"
@@ -428,7 +428,7 @@ def compile_archetype(json_file_path: str, output_file: str = "generated_models.
             example_field = list(properties.keys())[0]
     elif archetype_data:
         # Legacy format - filter out schema metadata
-        data_keys = [k for k in archetype_data.keys() if k not in ["$id", "$schema", "title", "type"]]
+        data_keys = [k for k in archetype_data if k not in ["$id", "$schema", "title", "type"]]
         if data_keys:
             example_field = data_keys[0]
 

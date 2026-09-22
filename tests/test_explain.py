@@ -1,5 +1,4 @@
 """Tests for the briefing renderer."""
-from sdk.profile import Profile
 from sdk.explain import render, render_catalogue, render_full, render_summary
 
 

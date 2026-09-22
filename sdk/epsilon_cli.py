@@ -15,27 +15,23 @@ from datetime import datetime
 import yaml
 from .client import APIClient
 from .errors import AuthenticationError, SDKError
-from sdk.archetype import compile_archetype as compile_arch
-from sdk.archetype import generate_csv_dummy_data
-from sdk.archetype import verify_synthetic_csv
 from . import config as sdk_config
+from .credentials import credentials_path
 from sdk import profile as profile_mod
 from sdk import catalogue as catalogue_mod
 from sdk import checks as checks_mod
 from sdk import explain as explain_mod
 from sdk import snippets as snippets_mod
-from sdk import agent as agent_mod
-from sdk import ui as ui_mod
 import re
 import shutil
 import traceback
+import tempfile
 
 app = typer.Typer(
     help="CLI for epsilon SDK: working with datasets, authentication, and generating Python model classes.")
 
 # Configuration directory and file paths
-CONFIG_DIR = Path.home() / ".epsilon_sdk"
-CONFIG_PATH = CONFIG_DIR / "credentials.ini"
+CONFIG_PATH = credentials_path()
 
 
 def get_client() -> APIClient:
@@ -48,35 +44,19 @@ def login(
         username: str = typer.Option(..., prompt=True, help="Your username or email."),
         password: str = typer.Option(..., prompt=True, hide_input=True, help="Your password."),
 ):
-    """
-    Authenticate with Keycloak and store access token locally.
-    """
+    """Sign in with Epsilon credentials and store the access token locally."""
+    from sdk.credentials import sign_in
     try:
-        # Construct the auth URL from base URL
         typer.echo("Authenticating with Epsilon...")
-        client = APIClient()  # Create new client for login
-        client.authenticate(username, password)
-        # Store the credentials and configuration
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        config = configparser.ConfigParser()
-        if CONFIG_PATH.exists():
-            config.read(CONFIG_PATH)
-        config["default"] = {
-            "access_token": client.access_token,
-            "expires_at": client.token_expires_at.isoformat() if client.token_expires_at else "",
-            "username": username
-        }
-        with open(CONFIG_PATH, "w") as f:
-            config.write(f)
-        # Show token expiration time
+        client = sign_in(username, password, path=CONFIG_PATH, client_factory=APIClient)
         if client.token_expires_at:
-            typer.echo(f"Token expires at: {client.token_expires_at.strftime('%Y-%m-%d %H:%M:%S')}")
+            typer.echo("Token expires at: " + client.token_expires_at.strftime("%Y-%m-%d %H:%M:%S"))
         typer.echo("Success")
-    except AuthenticationError as e:
-        typer.secho(f"Authentication failed: {str(e)}", fg=typer.colors.RED)
+    except AuthenticationError as exc:
+        typer.secho("Authentication failed: " + str(exc), fg=typer.colors.RED)
         raise typer.Exit(1)
-    except Exception as e:
-        typer.secho(f"Unexpected error: {str(e)}", fg=typer.colors.RED)
+    except Exception as exc:
+        typer.secho("Unexpected error: " + str(exc), fg=typer.colors.RED)
         raise typer.Exit(1)
 
 
@@ -108,6 +88,77 @@ def status():
     typer.secho(f"Logged in as: {username}", fg=typer.colors.GREEN)
 
 
+@app.command()
+def doctor():
+    """Check local project, login and notebook prerequisites without changing anything."""
+    checks = []
+    blockers = 0
+
+    if CONFIG_PATH.exists():
+        config = configparser.ConfigParser()
+        config.read(CONFIG_PATH)
+        if "default" in config and config["default"].get("access_token"):
+            checks.append(("Account", "ok", "credentials are stored locally"))
+        else:
+            checks.append(("Account", "action", "run 'epsilon login' to save credentials"))
+            blockers += 1
+    else:
+        checks.append(("Account", "action", "run 'epsilon login' to save credentials"))
+        blockers += 1
+
+    project_file = Path("project.yml")
+    if not project_file.exists():
+        checks.append(("Project", "info", "no project.yml in this folder; run 'epsilon init <dataset_id>'"))
+    else:
+        try:
+            project = yaml.safe_load(project_file.read_text()) or {}
+            if not isinstance(project, dict):
+                raise ValueError("project.yml must contain a mapping")
+            entry_point = project.get("entry_point", "main.py")
+            missing = [name for name in (entry_point, "generated/archetype.json", "generated/data.csv")
+                       if not Path(name).is_file()]
+            if missing:
+                checks.append(("Project", "action", "missing " + ", ".join(missing)))
+                blockers += 1
+            else:
+                checks.append(("Project", "ok", f"{entry_point} and generated projection are present"))
+        except (OSError, TypeError, ValueError, yaml.YAMLError) as exc:
+            checks.append(("Project", "action", "project.yml could not be read: " + str(exc)))
+            blockers += 1
+
+    docker = shutil.which("docker")
+    if not docker:
+        checks.append(("Notebook", "optional", "Docker is not installed; editing and AI remain available, cell execution does not"))
+    else:
+        try:
+            daemon = subprocess.run([docker, "info", "--format", "{{.ServerVersion}}"],
+                                    capture_output=True, text=True, timeout=5,
+                                    env={key: value for key, value in os.environ.items()
+                                         if key in ("PATH", "HOME", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG",
+                                                    "DOCKER_CERT_PATH", "DOCKER_TLS_VERIFY", "SYSTEMROOT", "USERPROFILE")})
+            if daemon.returncode:
+                checks.append(("Docker", "action", "the Docker daemon is not running; start Docker and retry"))
+            else:
+                image = subprocess.run([docker, "image", "inspect", "epsilon-notebook:local", "--format", "{{.Id}}"],
+                                       capture_output=True, text=True, timeout=5)
+                if image.returncode or not image.stdout.strip().startswith("sha256:"):
+                    checks.append(("Notebook", "action", "Docker is ready; run 'epsilon notebook-build' once"))
+                else:
+                    checks.append(("Notebook", "ok", "Docker and the isolated notebook image are ready"))
+        except (OSError, subprocess.TimeoutExpired):
+            checks.append(("Docker", "action", "Docker could not be queried; start it and retry"))
+
+    typer.secho("Epsilon doctor", fg=typer.colors.BLUE, bold=True)
+    symbols = {"ok": ("✓", typer.colors.GREEN), "action": ("!", typer.colors.YELLOW),
+               "optional": ("·", typer.colors.BRIGHT_BLACK), "info": ("·", typer.colors.BRIGHT_BLACK)}
+    for label, status_code, detail in checks:
+        symbol, colour = symbols[status_code]
+        typer.secho(f"{symbol} {label}: ", fg=colour, nl=False)
+        typer.echo(detail)
+    if blockers:
+        raise typer.Exit(1)
+
+
 @app.command(name="change-server")
 def change_server(
         url: str = typer.Argument(..., help="New server URL")
@@ -120,29 +171,21 @@ def change_server(
         typer.secho("Error: Please provide a valid URL starting with http:// or https://", fg=typer.colors.RED)
         raise typer.Exit(1)
 
-    # Clean up URL
     url = url.rstrip('/')
-
     try:
-        # Update config file
-        config_file = Path(__file__).parent / "config.py"
-
-        with open(config_file, 'r') as f:
-            content = f.read()
-        # Update BASE_URL
-        updated = re.sub(
-            r'BASE_URL = "[^"]*"',
-            f'BASE_URL = "{url}"',
-            content
-        )
-        with open(config_file, 'w') as f:
-            f.write(updated)
-        typer.secho(f"Server updated to: {url}", fg=typer.colors.GREEN)
-        typer.echo("Note: You'll need to login again with 'epsilon login'")
-
-    except Exception as e:
+        # Saved in the user's state folder: the installed package may be
+        # read-only, and an upgrade would silently replace an edited file.
+        where = sdk_config.save_server(url)
+    except OSError as e:
         typer.secho(f"Failed to update server: {e}", fg=typer.colors.RED)
         raise typer.Exit(1)
+    sdk_config.BASE_URL = url
+    typer.secho(f"Server updated to: {url}", fg=typer.colors.GREEN)
+    typer.echo(f"Saved in {where}")
+    if os.environ.get("EPSILON_SERVER_URL"):
+        typer.secho("EPSILON_SERVER_URL is set in this shell and takes precedence over the saved server.",
+                    fg=typer.colors.YELLOW)
+    typer.echo("Note: You'll need to login again with 'epsilon login'")
 
 
 @app.command()
@@ -165,11 +208,12 @@ def datasets():
             # Handle different field names from API
             dataset_id = dataset.get('datasetId', dataset.get('projectId', dataset.get('id', 'N/A')))
             package_id = dataset.get('packageId', '')
-            name = dataset.get('name', package_id if package_id else 'Unnamed')
             last_modified = dataset.get('lastModified', '')
             status = dataset.get('status', '')
 
             typer.echo(f"{idx}. Dataset ID: {dataset_id}")
+            if dataset.get('name'):
+                typer.echo(f"   Name: {dataset['name']}")
             if package_id:
                 typer.echo(f"   Package: {package_id}")
             if last_modified:
@@ -198,179 +242,39 @@ def datasets():
 def init(
         dataset_id: str = typer.Argument(..., help="ID of the dataset to initialize project with."),
         dummy_data: bool = typer.Option(False, "--dummy-data",
-                                        help="Generate random dummy data locally instead of downloading the synthetic dataset.")
+                                       help="Generate random dummy data instead of downloading the synthetic dataset.")
 ):
-    """
-    Initialize a new Epsilon project with a dataset.
-    Creates project.yml, downloads archetype, generates models and dummy data.
-    """
+    """Initialise a project using the same service as the browser workspace."""
+    from sdk.project_setup import initialise_project
     try:
-        # Check if project already exists
-        if os.path.exists("project.yml"):
-            typer.secho("Project already initialized. Use 'epsilon clean' to start over.", fg=typer.colors.YELLOW)
-            raise typer.Exit(1)
-
-        typer.secho(f"Initializing project with dataset: {dataset_id}", fg=typer.colors.BLUE)
-
-        client = get_client()
-
-        # Create generated directory for SDK files
-        os.makedirs("generated", exist_ok=True)
-
-        # Create __init__.py to make generated a Python package
-        with open("generated/__init__.py", 'w') as f:
-            f.write('# Generated files - do not edit manually\n')
-        typer.secho("✓ Created generated/__init__.py", fg=typer.colors.GREEN)
-
-        # Download archetype
-        typer.echo("Downloading archetype...")
-        archetype_data = client.get_dataset(dataset_id)
-
-        # Get archetype_id from the $id field in the archetype JSON
-        # Format is "project_id/archetype_id", we need just the archetype_id
-        full_id = archetype_data.get('$id', dataset_id)
-        archetype_id = full_id.split('/')[-1]
-        typer.echo(f"Archetype ID: {archetype_id}")
-
-        # Save archetype in generated folder
-        with open("generated/archetype.json", 'w') as f:
-            json.dump(archetype_data, f, indent=2)
-        typer.secho("✓ Created generated/archetype.json", fg=typer.colors.GREEN)
-
-        # Populate generated/data.csv for local testing.
-        # Prefer the archetype-scoped synthetic dataset projection served by
-        # the hub; dummy data only on explicit request or when no synthetic
-        # dataset is attached.
-        synthetic_info = None
-        descriptor = archetype_data.get("syntheticData") or {}
-        if dummy_data:
-            typer.echo("Generating random dummy data (--dummy-data)...")
-            generate_csv_dummy_data(archetype_data, "generated/data.csv", num_records=10)
-            typer.secho("✓ Created generated/data.csv (random dummy data)", fg=typer.colors.GREEN)
-        elif descriptor.get("available"):
-            typer.echo("Downloading synthetic dataset...")
-            try:
-                synthetic_info = client.download_synthetic_data(dataset_id, "generated/data.csv")
-                verify_synthetic_csv("generated/data.csv", archetype_data, synthetic_info.get("schema_hash"))
-            except (SDKError, ValueError) as e:
-                # Remove the rejected download so a failed init leaves no
-                # stale data.csv behind.
-                if os.path.exists("generated/data.csv"):
-                    os.remove("generated/data.csv")
-                typer.secho(f"Synthetic dataset download failed: {e}", fg=typer.colors.RED)
-                typer.echo(f"Use 'epsilon init {dataset_id} --dummy-data' to proceed with random data instead.")
-                raise typer.Exit(1)
-            schema_hash = synthetic_info.get("schema_hash")
-            version = synthetic_info.get("version")
-            if not schema_hash:
-                typer.secho(
-                    "Warning: the server response is missing the schema-hash header; "
-                    "the download could not be verified against the archetype's pinned hash.",
-                    fg=typer.colors.YELLOW,
-                )
-            detail = "synthetic dataset"
-            if schema_hash:
-                detail += f", schema {schema_hash[:12]}"
-            if version is not None:
-                detail += f", version {version}"
-            typer.secho(f"✓ Created generated/data.csv ({detail})", fg=typer.colors.GREEN)
-        else:
-            if archetype_data.get("syntheticDataUrl") or archetype_data.get("synthetic_data_url"):
-                typer.secho(
-                    "Warning: the server returned 'syntheticDataUrl', which this SDK no longer supports "
-                    "— the server is older than this SDK.",
-                    fg=typer.colors.YELLOW,
-                )
-            typer.echo("No synthetic dataset attached to this dataset — generating dummy data.")
-            generate_csv_dummy_data(archetype_data, "generated/data.csv", num_records=10)
-            typer.secho("✓ Created generated/data.csv (dummy data)", fg=typer.colors.GREEN)
-
-        # Compile to models.py in generated folder
-        typer.echo("Generating Python models...")
-        compile_arch("generated/archetype.json", "generated/models.py")
-        typer.secho("✓ Created generated/models.py", fg=typer.colors.GREEN)
-
-        # Create project.yml
-        project_config = {
-            'name': f'Epsilon Project - {archetype_id}',
-            'dataset_id': dataset_id,
-            'archetype_id': archetype_id,
-            'entry_point': 'main.py',
-            'epsilon': 1.0,
-            'created_at': datetime.now().isoformat()
-        }
-
-        # Pin the synthetic dataset version and schema hash the project was
-        # initialized against (only when synthetic data was downloaded and
-        # the server actually reported the values — never pin nulls).
-        if synthetic_info is not None:
-            raw_version = synthetic_info.get("version")
-            if raw_version is not None:
-                try:
-                    project_config['dataset_version'] = int(raw_version)
-                except (TypeError, ValueError):
-                    project_config['dataset_version'] = raw_version
-            if synthetic_info.get("schema_hash"):
-                project_config['schema_hash'] = synthetic_info.get("schema_hash")
-
-        with open("project.yml", 'w') as f:
-            yaml.dump(project_config, f, default_flow_style=False, indent=2)
+        if Path("project.yml").exists():
+            raise SDKError("Project already initialized. Choose a new project folder.")
+        typer.secho("Initializing project with dataset: " + dataset_id, fg=typer.colors.BLUE)
+        result = initialise_project(".", dataset_id, get_client(), dummy_data,
+                                    lambda stage, message: typer.echo(message))
+        if result["source"] == "dummy":
+            typer.echo("Generating random dummy data (--dummy-data)..." if dummy_data else
+                       "No synthetic dataset attached to this dataset — generating dummy data.")
+        for warning in result["warnings"]:
+            typer.secho("Warning: " + warning, fg=typer.colors.YELLOW)
+        project = result["project"]
+        detail = "synthetic dataset" if result["source"] == "synthetic" else ("random dummy data" if dummy_data else "dummy data")
+        if project.get("schema_hash"):
+            detail += ", schema " + str(project["schema_hash"])[:12]
+        if project.get("dataset_version") is not None:
+            detail += ", version " + str(project["dataset_version"])
+        for name in ("__init__.py", "archetype.json", "models.py"):
+            typer.secho("✓ Created generated/" + name, fg=typer.colors.GREEN)
+        typer.secho("✓ Created generated/data.csv (" + detail + ")", fg=typer.colors.GREEN)
         typer.secho("✓ Created project.yml", fg=typer.colors.GREEN)
-
-        # Create template main.py
-        main_template = '''from generated.models import create_dataset
-
-def main():
-    # Load the dataset
-    dataset = create_dataset()
-    print(f"Loaded {len(dataset)} records")
-
-    # Your analysis code here
-    for record in dataset:
-        # Example: Access fields from your archetype
-        # print(record.field_name)
-        pass
-
-    return {"result": "Analysis complete"}
-
-if __name__ == "__main__":
-    result = main()
-    print(result)
-'''
-        with open("main.py", 'w') as f:
-            f.write(main_template)
-        typer.secho("✓ Created main.py template", fg=typer.colors.GREEN)
-
-        # Create .gitignore
-        gitignore_content = '''# Epsilon project files
-generated/data.csv      # Never commit dummy data - replaced with real data on server
-*.pyc
-__pycache__/
-.epsilon_sdk/
-'''
-        with open(".gitignore", 'w') as f:
-            f.write(gitignore_content)
-        typer.secho("✓ Created .gitignore", fg=typer.colors.GREEN)
-
-        typer.echo()
-        typer.secho("Project initialized successfully!", fg=typer.colors.GREEN, bold=True)
-        typer.echo("Next steps:")
-        typer.echo("  1. Edit main.py to write your analysis")
-        typer.echo("  2. Run 'epsilon run' to test locally")
-
-    except typer.Exit:
-        # Let intentional exits propagate untouched instead of being
-        # re-reported as 'Error: 1' by the generic handler below.
-        raise
-    except AuthenticationError as e:
-        typer.secho(f"Authentication error: {e}", fg=typer.colors.RED)
-        typer.echo("Please run 'epsilon login' to authenticate")
-        raise typer.Exit(1)
-    except SDKError as e:
-        typer.secho(f"API error: {e}", fg=typer.colors.RED)
-        raise typer.Exit(1)
-    except Exception as e:
-        typer.secho(f"Error: {str(e)}", fg=typer.colors.RED)
+        typer.secho("✓ Created main.py template (or preserved existing entry point)", fg=typer.colors.GREEN)
+        typer.secho("✓ Created .gitignore (or preserved existing rules)", fg=typer.colors.GREEN)
+        typer.secho("Project initialized successfully!", fg=typer.colors.GREEN)
+        typer.echo("Run 'epsilon start' to explore the project in your browser.")
+    except (SDKError, ValueError, OSError) as exc:
+        typer.secho("Initialization failed: " + str(exc), fg=typer.colors.RED)
+        if not dummy_data:
+            typer.echo("For random development data, use 'epsilon init " + dataset_id + " --dummy-data'.")
         raise typer.Exit(1)
 
 
@@ -422,13 +326,25 @@ def run():
 
 
 @app.command()
-def clean():
+def clean(
+        yes: bool = typer.Option(False, "--yes", "-y", help="Delete without asking for confirmation.")
+):
     """
     Clean project files (generated/ folder, main.py, project.yml).
     """
 
     files_to_clean = ["project.yml", "main.py", ".gitignore"]
     dirs_to_clean = ["generated", "build"]
+
+    present = ([f for f in files_to_clean if os.path.exists(f)] +
+               [f"{d}/" for d in dirs_to_clean if os.path.exists(d)])
+    if not present:
+        typer.echo("No project files to clean")
+        return
+    # main.py holds the researcher's own analysis code.
+    if not yes and not typer.confirm(f"Delete {', '.join(present)} from {os.getcwd()}?", default=False):
+        typer.echo("Nothing was deleted.")
+        raise typer.Exit(1)
 
     cleaned = []
 
@@ -446,8 +362,120 @@ def clean():
 
     if cleaned:
         typer.secho(f"Cleaned: {', '.join(cleaned)}", fg=typer.colors.GREEN)
+
+
+def _run_submission_checks(analysis_script):
+    """Print every finding; stop the build if any of them blocks submission."""
+    findings = checks_mod.check_project(".")
+    findings.extend(checks_mod.check_packaging(".", analysis_script, set(PACKAGED_DIRS)))
+    blocking = [f for f in findings if f.blocking]
+    for finding in findings:
+        colour = typer.colors.RED if finding.blocking else typer.colors.YELLOW
+        typer.secho(finding.format(), fg=colour)
+    if blocking:
+        typer.echo("")
+        typer.secho(
+            "{0} Fix them, or pass --skip-checks to package anyway "
+            "(the coordinator will apply the same rules).".format(
+                checks_mod.summarise(findings)), fg=typer.colors.RED)
+        raise typer.Exit(1)
+    if findings:
+        typer.echo("")
+        typer.secho(checks_mod.summarise(findings), fg=typer.colors.YELLOW)
     else:
-        typer.echo("No project files to clean")
+        typer.secho("\u2713 Submission checks passed", fg=typer.colors.GREEN)
+
+
+def _copy_packaged_dirs(output_dir):
+    print("Copying generated files...")
+    if os.path.exists("generated"):
+        shutil.copytree("generated", os.path.join(output_dir, "generated"), dirs_exist_ok=True)
+        print("Copied generated/ folder")
+    # Analyses written by 'epsilon snippet' live here and are imported by
+    # the entry point, so they have to travel with it.
+    if os.path.exists(PACKAGED_DIRS[1]):
+        shutil.copytree(PACKAGED_DIRS[1], os.path.join(output_dir, PACKAGED_DIRS[1]), dirs_exist_ok=True)
+        print("Copied {0}/ folder".format(PACKAGED_DIRS[1]))
+
+
+def _requirements(analysis_script):
+    """requirements.txt lines, from pip freeze of the current environment."""
+    print("Generating requirements.txt...")
+    try:
+        result = subprocess.run([sys.executable, '-m', 'pip', 'freeze'],
+                                capture_output=True, text=True, check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"Could not run pip freeze: {e}")
+        return ["# Could not generate requirements automatically",
+                "# Please install dependencies manually in enclave",
+                f"# Error: {e}"]
+    frozen = result.stdout.strip()
+    if not frozen:
+        print("No packages found in current environment")
+        return ["# No packages found in current environment", f"# Generated at: {datetime.now()}"]
+    print(f"Captured {len([line for line in frozen.split() if line.strip()])} packages")
+    return ["# Auto-generated requirements using pip freeze",
+            f"# Generated from: {analysis_script}",
+            f"# Generated at: {datetime.now()}",
+            "",
+            frozen]
+
+
+def _manifest(analysis_script, dataset_id, archetype_id):
+    """The build.yml the coordinator reads."""
+    datasets = [{
+        'dataset_id': dataset_id,
+        'archetype_id': archetype_id,
+        'import_path': 'generated.models',
+        'function_name': 'create_dataset',
+        'archetype_path': 'generated/archetype.json'
+    }]
+    script_name = os.path.splitext(os.path.basename(analysis_script))[0]
+    return {
+        'version': '1.0',
+        'analysis': {
+            'name': script_name.replace('_', ' ').title(),
+            'description': f'Analysis from {os.path.basename(analysis_script)}',
+            'script_file': os.path.basename(analysis_script),
+            'requirements': 'requirements.txt'
+        },
+        'datasets': datasets,
+        'privacy': {
+            'epsilon': 1.0
+        },
+        'execution': {
+            'environment': 'enclave',
+            'timeout': 300
+        },
+        'generated_at': str(datetime.now()),
+        'build_info': {
+            'command': f'epsilon build {analysis_script}',
+            'detected_datasets': len(datasets),
+            'original_script': analysis_script
+        }
+    }
+
+
+def _write_package(output_dir, analysis_script, manifest, requirements):
+    script_name = os.path.splitext(os.path.basename(analysis_script))[0]
+    with open(os.path.join(output_dir, 'build.yml'), 'w') as f:
+        yaml.dump(manifest, f, default_flow_style=False, indent=2, sort_keys=False)
+    shutil.copy2(analysis_script, os.path.join(output_dir, f'{script_name}.py'))
+    print(f"Copied {analysis_script}")
+    with open(os.path.join(output_dir, 'requirements.txt'), 'w') as f:
+        f.write('\n'.join(requirements))
+    return script_name
+
+
+def _stage_in_git(output_dir):
+    """The coordinator clones the project repository, so the package must be
+    committed. Staging is announced and can be switched off."""
+    try:
+        subprocess.run(['git', 'add', output_dir], check=True, capture_output=True)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return  # Not a git repository, or git is not installed
+    print(f"\n📌 Staged {output_dir}/ in git. Commit and push it to submit "
+          "(use --no-git-add to skip staging).")
 
 
 @app.command()
@@ -455,7 +483,10 @@ def build(
         output_dir: str = typer.Option("./build", help="Output directory"),
         skip_checks: bool = typer.Option(
             False, "--skip-checks",
-            help="Package without running the submission checks first.")
+            help="Package without running the submission checks first."),
+        git_add: bool = typer.Option(
+            True, "--git-add/--no-git-add",
+            help="Stage the package in git; the platform reads it from your repository.")
 ):
     """
     Build analysis package from project configuration.
@@ -466,183 +497,48 @@ def build(
     never leaves the machine.
     """
     try:
-        # Check if we're in a project directory
         if not os.path.exists("project.yml"):
             typer.secho("Error: Not in an Epsilon project directory.", fg=typer.colors.RED)
             typer.echo("Run 'epsilon init <dataset_id>' to create a project first.")
             raise typer.Exit(1)
-
-        # Load project config
         with open("project.yml", 'r') as f:
             project = yaml.safe_load(f)
-
         analysis_script = project.get('entry_point', 'main.py')
         dataset_id = project.get('dataset_id')
         archetype_id = project.get('archetype_id')
 
         if not skip_checks:
-            findings = checks_mod.check_project(".")
-            findings.extend(checks_mod.check_packaging(
-                ".", analysis_script, set(PACKAGED_DIRS)))
-            blocking = [f for f in findings if f.blocking]
-            for finding in findings:
-                colour = typer.colors.RED if finding.blocking else typer.colors.YELLOW
-                typer.secho(finding.format(), fg=colour)
-            if blocking:
-                typer.echo("")
-                typer.secho(
-                    "{0} Fix them, or pass --skip-checks to package anyway "
-                    "(the coordinator will apply the same rules).".format(
-                        checks_mod.summarise(findings)), fg=typer.colors.RED)
-                raise typer.Exit(1)
-            if findings:
-                typer.echo("")
-                typer.secho(checks_mod.summarise(findings), fg=typer.colors.YELLOW)
-            else:
-                typer.secho("\u2713 Submission checks passed", fg=typer.colors.GREEN)
+            _run_submission_checks(analysis_script)
 
         os.makedirs(output_dir, exist_ok=True)
-
         print(f"Building analysis package from: {analysis_script}")
         print(f"Dataset: {dataset_id} (archetype: {archetype_id})")
-
         if not os.path.exists(analysis_script):
             typer.secho(f"Script not found: {analysis_script}", fg=typer.colors.RED)
             raise typer.Exit(1)
-
-        # Create dataset info from project configuration
-        datasets = [{
-            'dataset_id': dataset_id,
-            'archetype_id': archetype_id,
-            'import_path': 'generated.models',
-            'function_name': 'create_dataset',
-            'archetype_path': 'generated/archetype.json'
-        }]
-
         print(f"Using dataset: {dataset_id} (archetype: {archetype_id})")
 
-        # Copy generated folder to build directory
-        print("Copying generated files...")
-        if os.path.exists("generated"):
-            shutil.copytree("generated", os.path.join(output_dir, "generated"), dirs_exist_ok=True)
-            print("Copied generated/ folder")
+        _copy_packaged_dirs(output_dir)
+        requirements = _requirements(analysis_script)
+        manifest = _manifest(analysis_script, dataset_id, archetype_id)
+        script_name = _write_package(output_dir, analysis_script, manifest, requirements)
 
-        # Analyses written by 'epsilon snippet' live here and are imported by
-        # the entry point, so they have to travel with it.
-        if os.path.exists(PACKAGED_DIRS[1]):
-            shutil.copytree(PACKAGED_DIRS[1],
-                            os.path.join(output_dir, PACKAGED_DIRS[1]),
-                            dirs_exist_ok=True)
-            print("Copied {0}/ folder".format(PACKAGED_DIRS[1]))
-
-        # Generate requirements.txt using pip freeze
-        print("Generating requirements.txt...")
-
-        try:
-            # Run pip freeze to get current environment packages
-            result = subprocess.run([sys.executable, '-m', 'pip', 'freeze'],
-                                    capture_output=True, text=True, check=True)
-
-            pip_freeze_output = result.stdout.strip()
-
-            if pip_freeze_output:
-                requirements_content = [
-                    "# Auto-generated requirements using pip freeze",
-                    f"# Generated from: {analysis_script}",
-                    f"# Generated at: {datetime.now()}",
-                    "",
-                    pip_freeze_output
-                ]
-
-                print(f"Captured {len([l for l in pip_freeze_output.split() if l.strip()])} packages")
-            else:
-                requirements_content = [
-                    "# No packages found in current environment",
-                    f"# Generated at: {datetime.now()}"
-                ]
-                print("No packages found in current environment")
-
-        except subprocess.CalledProcessError as e:
-            print(f"Could not run pip freeze: {e}")
-            requirements_content = [
-                "# Could not generate requirements automatically",
-                "# Please install dependencies manually in enclave",
-                f"# Error: {e}"
-            ]
-
-        # Get script metadata
-        script_name = os.path.splitext(os.path.basename(analysis_script))[0]
-        analysis_name = script_name.replace('_', ' ').title()
-
-        # Build manifest
-        manifest = {
-            'version': '1.0',
-            'analysis': {
-                'name': analysis_name,
-                'description': f'Analysis from {os.path.basename(analysis_script)}',
-                'script_file': os.path.basename(analysis_script),  # Use original script name
-                'requirements': 'requirements.txt'
-            },
-            'datasets': datasets,
-            'privacy': {
-                'epsilon': 1.0
-            },
-            'execution': {
-                'environment': 'enclave',
-                'timeout': 300
-            },
-            'generated_at': str(datetime.now()),
-            'build_info': {
-                'command': f'epsilon build {analysis_script}',
-                'detected_datasets': len(datasets),
-                'original_script': analysis_script
-            }
-        }
-
-        # Create output files
-        yaml_file = os.path.join(output_dir, 'build.yml')
-        python_file = os.path.join(output_dir, f'{script_name}.py')
-        requirements_file = os.path.join(output_dir, 'requirements.txt')
-        # Step 1: Write YAML manifest
-        with open(yaml_file, 'w') as f:
-            yaml.dump(manifest, f, default_flow_style=False, indent=2, sort_keys=False)
-
-        # Step 2: Copy Python script
-        shutil.copy2(analysis_script, python_file)
-        print(f"Copied {analysis_script}")
-
-        # Step 3: Create requirements.txt
-        with open(requirements_file, 'w') as f:
-            f.write('\n'.join(requirements_content))
-
-        typer.secho(f"Analysis package built successfully!", fg=typer.colors.GREEN)
-
-        # Show what was created
+        typer.secho("Analysis package built successfully!", fg=typer.colors.GREEN)
         print(f"\n Build Package Created: {output_dir}/")
-        print(f"   build.yml - Analysis manifest")
+        print("   build.yml - Analysis manifest")
         print(f"   {script_name}.py - Analysis script")
-
-        # Show summary
-        print(f"\nPackage Summary:")
+        print("\nPackage Summary:")
         print(f"   Analysis: {manifest['analysis']['name']}")
         print(f"   Script: {manifest['analysis']['script_file']}")
-
         print(f"   Dataset: {dataset_id} (archetype: {archetype_id})")
-        print(f"   Import: from generated.models import create_dataset")
-
-        print(f"\n Ready for Server:")
+        print("   Import: from generated.models import create_dataset")
+        print("\n Ready for Server:")
         print(f"   1. Submit package: {output_dir}/")
-        print(f"   2. Server reads: build.yml")
+        print("   2. Server reads: build.yml")
         print(f"   3. Server executes: {script_name}.py")
 
-        # Auto add build folder to git
-        try:
-            subprocess.run(['git', 'add', output_dir], check=True, capture_output=True)
-        except subprocess.CalledProcessError:
-            pass  # Not a git repo or git not available
-        except FileNotFoundError:
-            pass  # git not installed
-
+        if git_add:
+            _stage_in_git(output_dir)
         return output_dir
 
     except typer.Exit:
@@ -822,6 +718,10 @@ def ai_login(
     if base_url is None and provider == ai_config.PROVIDER_OPENAI_COMPATIBLE:
         base_url = typer.prompt("Base URL (e.g. http://localhost:11434/v1)",
                                 default=current.base_url or "")
+    problem = ai_config.check_base_url(base_url)
+    if problem:
+        typer.secho(problem, fg=typer.colors.RED)
+        raise typer.Exit(1)
     tier = tier or typer.prompt("Capability tier (A/B/C)", default=current.tier)
     if tier not in (ai_config.TIER_A, ai_config.TIER_B, ai_config.TIER_C):
         typer.secho("Tier must be A, B or C.", fg=typer.colors.RED)
@@ -863,7 +763,7 @@ def ai_status():
         # different endpoint silently sends the wrong credential.
         if (cfg.key_source or "").startswith("env:"):
             name = cfg.key_source.split(":", 1)[1]
-            if ai_config._key_from_keyring():
+            if ai_config.stored_key():
                 typer.secho(
                     "           WARNING: {0} is shadowing a key stored in your "
                     "keyring.\n           Run 'unset {0}' to use the stored "
@@ -871,8 +771,29 @@ def ai_status():
     else:
         typer.secho("key      : not found", fg=typer.colors.YELLOW)
         typer.echo("           run 'epsilon ai login', or set " + ", ".join(ai_config.ENV_KEYS))
+    _report_workspace_ai(cfg)
     typer.echo("")
     typer.echo("explain, snippet and check work without a model.")
+
+
+def _report_workspace_ai(cfg):
+    """The workspace can save its own connection or model; say when it differs."""
+    from sdk.workbench.store import read_setting
+    database = Path.home() / sdk_config.CREDENTIALS_DIR / "workbench.db"
+    own = read_setting(database, "ai")
+    chosen = read_setting(database, "ai_model")
+    active = own or {"provider": cfg.provider, "base_url": cfg.base_url, "model": cfg.model}
+    model = active.get("model")
+    if chosen and chosen.get("provider") == active.get("provider") and chosen.get("base_url") == active.get("base_url"):
+        model = chosen.get("model") or model
+    if not own and model == cfg.model:
+        return
+    typer.echo("")
+    typer.secho("workspace: epsilon start uses {0}{1} / {2}, set in its Settings.".format(
+        active.get("provider"), " at " + active["base_url"] if active.get("base_url") else "", model),
+        fg=typer.colors.YELLOW)
+    if own:
+        typer.echo("           Choose 'Use existing epsilon ai login settings' there to use the values above.")
 
 
 @ai_app.command("logout")
@@ -892,54 +813,37 @@ def ai_logout():
 
 @app.command()
 def start(
-        port: int = typer.Option(ui_mod.DEFAULT_PORT, help="Port to serve on."),
+        port: int = typer.Option(sdk_config.DEFAULT_PORT, min=1, max=65535, help="Port to serve on."),
         no_browser: bool = typer.Option(
             False, "--no-browser", help="Do not open a browser."),
         no_record: bool = typer.Option(
-            False, "--no-record", help="Do not write a chat transcript.")
+            False, "--no-record", help="Disable the audit log; conversations still persist in the workspace database.")
 ):
     """
     Start the Epsilon workspace in a browser.
 
     Walks setup, shows what the dataset holds and what it can and cannot
     answer, and is where the assistant lives -- there is no terminal chat.
-    Serves on loopback only, beside your project, so the data and your key
-    never leave this machine.
+    Serves on loopback. Uses the existing epsilon login credentials.
+    Defaults to https://app.epsilon-data.org and ~/.epsilon_sdk/credentials.ini,
+    with username/password sign-in. No environment variables are required.
+    Cloud AI receives permitted schema and conversation context when enabled.
     """
-    # `start` must work before `init` -- guiding setup is half its job.
-    try:
-        profile = profile_mod.profile_project(".")
-    except profile_mod.ProfileError:
-        profile = None
-
-    session = None
-    try:
-        from sdk import llm
-        if profile is not None and llm.available():
-            provider = llm.get_provider(llm.TIER_A, "the copilot agent")
-            session = agent_mod.Session.create(
-                provider, profile, project_dir=".", record=not no_record)
-    except Exception as exc:
-        typer.secho("Chat disabled: {0}".format(exc), fg=typer.colors.YELLOW)
-
-    from sdk import webapp as app_mod
-    from sdk.workspace import Workspace
-    space = Workspace(".", profile, session, register=True)
-
-    # One server: the workspace and the assistant share one origin, so a
-    # suggested analysis can open a session that already knows the project.
-    if not app_mod.available():
-        typer.secho("epsilon start needs the chat extra:", fg=typer.colors.RED)
-        typer.echo("  pip install 'epsilon-sdk[copilot,chat]'")
-        typer.echo("The terminal commands (explain, snippet, check, run, "
-                   "build) work without it.")
+    from sdk.workbench import server as workbench_server
+    if not workbench_server.available():
+        typer.secho("epsilon start needs the workbench extra:", fg=typer.colors.RED)
+        typer.echo("  pip install 'epsilon-sdk[workbench,copilot]'")
         raise typer.Exit(1)
-
     try:
-        server, url = app_mod.serve(space, port, open_browser=not no_browser)
-    except OSError:
-        _port_taken(port, no_browser)
-    _announce(url, profile, chat="assistant at {0}chat".format(url))
+        server, url = workbench_server.serve(".", port, open_browser=not no_browser, record=not no_record)
+    except OSError as exc:
+        import errno
+        if exc.errno == errno.EADDRINUSE:
+            _port_taken(port, no_browser)
+        typer.secho("Cannot start the workspace. Check access to the SDK state directory and the local port.", fg=typer.colors.RED)
+        raise typer.Exit(1)
+    _announce(url, None, chat="local research workbench")
+    typer.echo("  The launch link unlocks this browser once and expires after 10 minutes.")
     try:
         server.run()
     except KeyboardInterrupt:
@@ -948,26 +852,92 @@ def start(
 
 def _port_taken(port: int, no_browser: bool):
     """The port is busy. If it is an Epsilon workspace, point at it."""
-    import json
     import urllib.request
     import webbrowser
 
     url = "http://127.0.0.1:{0}/".format(port)
     try:
-        with urllib.request.urlopen(url + "api/projects", timeout=2) as res:
-            json.load(res)
+        with urllib.request.urlopen(url + "api/health", timeout=2) as res:
+            payload = json.load(res)
+            if payload.get("application") != "epsilon-workbench":
+                raise ValueError("Not an Epsilon workbench")
     except Exception:
         typer.secho("Port {0} is taken by something else.".format(port),
                     fg=typer.colors.RED)
-        typer.echo("Try 'epsilon start --port 8788'.")
+        typer.echo("Try 'epsilon start --port {0}'.".format(port + 1))
         raise typer.Exit(1)
     typer.secho("epsilon workspace", bold=True)
+    from sdk.workbench.server import existing_launch_url
+    fresh = existing_launch_url(port)
+    if fresh:
+        url = fresh
     typer.echo("  already running at {0}".format(url))
-    typer.secho("  Stop it with Ctrl-C in its own terminal.",
+    typer.secho("  Your running work is preserved. Open this fresh link within 10 minutes." if fresh else
+                "  Stop it with Ctrl-C in its own terminal, then run epsilon start for a fresh launch link.",
                 fg=typer.colors.BRIGHT_BLACK)
     if not no_browser:
         webbrowser.open(url)
     raise typer.Exit(0)
+
+
+def _notebook_requirements(path: Path):
+    """Read a researcher-owned package list without allowing shell/options/URLs."""
+    path = path.expanduser().resolve()
+    if not path.is_file():
+        raise SDKError("Notebook requirements file was not found: " + str(path))
+    if path.stat().st_size > 20000:
+        raise SDKError("Notebook requirements file is too large.")
+    pattern = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*(?:\[[A-Za-z0-9_,.-]+\])?(?:\s*(?:==|~=|>=|<=|>|<)\s*[A-Za-z0-9.*+!-]+)?$")
+    lines = []
+    for number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        value = raw.split("#", 1)[0].strip()
+        if not value:
+            continue
+        if value.startswith(("-", "http:", "https:", "git+", "file:")) or not pattern.fullmatch(value):
+            raise SDKError(f"Unsupported notebook requirement on line {number}. Use a package name with an optional version constraint.")
+        lines.append(value)
+    return lines
+
+
+@app.command("notebook-build")
+def notebook_build(
+        requirements: Optional[Path] = typer.Option(None, "--requirements",
+                                                     help="Optional project package list to add to the managed notebook image."),
+):
+    """Build the optional Docker image for isolated Python notebook execution."""
+    from sdk.workbench.kernel import IMAGE, docker_environment
+    docker = shutil.which("docker")
+    if not docker:
+        typer.secho("Install and start Docker, then run epsilon notebook-build again.", fg=typer.colors.RED)
+        raise typer.Exit(1)
+    context = Path(__file__).parent / "workbench" / "runtime"
+    temporary = None
+    if requirements:
+        try:
+            extra = _notebook_requirements(requirements)
+        except (OSError, SDKError) as exc:
+            typer.secho("Notebook requirements rejected: " + str(exc), fg=typer.colors.RED)
+            raise typer.Exit(1)
+        temporary = tempfile.TemporaryDirectory(prefix="epsilon-notebook-build-")
+        custom_context = Path(temporary.name) / "runtime"
+        shutil.copytree(context, custom_context)
+        managed = (custom_context / "requirements.txt").read_text(encoding="utf-8").rstrip()
+        (custom_context / "requirements.txt").write_text(managed + ("\n" if managed else "") + "\n".join(extra) + "\n", encoding="utf-8")
+        context = custom_context
+        typer.echo("Adding " + ", ".join(extra) + " to the managed notebook image.")
+    typer.echo("Building " + IMAGE + ". Docker downloads the Python base image and notebook dependencies.")
+    try:
+        result = subprocess.run([docker, "build", "--tag", IMAGE, str(context)], env=docker_environment())
+    except OSError as exc:
+        typer.secho("Could not start Docker: " + str(exc), fg=typer.colors.RED)
+        raise typer.Exit(1)
+    finally:
+        if temporary:
+            temporary.cleanup()
+    if result.returncode:
+        typer.secho("Notebook runtime build failed. Check Docker and retry.", fg=typer.colors.RED)
+        raise typer.Exit(1)
+    typer.echo("Notebook runtime ready. Restart any running notebook from its options menu to use the updated libraries; saved source is preserved.")
 
 
 def _announce(url, profile, chat: str) -> None:

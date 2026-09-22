@@ -1,18 +1,10 @@
 """
 Pytest configuration and fixtures
 """
-import os
-import tempfile
-
-# Chainlit resolves its config, files and public/ directory from
-# CHAINLIT_APP_ROOT at import time. Point it at a throwaway directory before
-# anything imports chainlit, so tests never write into the repository.
-os.environ.setdefault("CHAINLIT_APP_ROOT",
-                      tempfile.mkdtemp(prefix="epsilon-test-chainlit-"))
 
 import pytest
 from unittest.mock import Mock
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from sdk.client import APIClient
 
@@ -169,3 +161,62 @@ def keyed_profile(profile):
     p.grain.dedupe_key = "patient.pid"
     p.grain.unit = "patient"
     return p
+
+
+# -- shared workbench fixture --------------------------------------------
+
+def settled(bench, pid, payload):
+    """Wait for a background job to stop, whatever its outcome."""
+    import time
+    job = bench.jobs.get(pid, payload["id"])
+    deadline = time.monotonic() + 10
+    while job.status in ("queued", "running") and time.monotonic() < deadline:
+        time.sleep(.01)
+    assert job.status not in ("queued", "running"), job.payload()
+    return job
+
+
+def finished(bench, pid, payload):
+    """Wait for a background job and require that it completed."""
+    job = settled(bench, pid, payload)
+    assert job.status == "completed", job.payload()
+    return job.result
+
+
+@pytest.fixture
+def workspace(tmp_path, monkeypatch):
+    """A registered project, a mocked Epsilon API and an unlocked browser session."""
+    import copy
+    from pathlib import Path
+    from types import SimpleNamespace
+    from fastapi.testclient import TestClient
+    from sdk import llm
+    from sdk.workbench.api import build
+    from sdk.workbench.service import Workbench
+    monkeypatch.setattr(llm, "load", lambda: llm.AIConfig(api_key=None))
+    root = build_dataset(tmp_path / "respiratory")
+    (root / "project.yml").write_text("dataset_id: ds-1\narchetype_id: arch-1\nentry_point: main.py\n")
+    bench = Workbench(root, state_dir=tmp_path / "state")
+    pid = bench.project_list()[0]["id"]
+    hub = Mock(spec=APIClient)
+    hub.access_token = "fixture-access-token-123456789"
+    hub.token_expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
+    hub.get_datasets.return_value = [{"datasetId": "ds-1", "name": "Respiratory study"}]
+    hub.get_dataset.return_value = copy.deepcopy(ARCHETYPE)
+    def download(dataset_id, destination):
+        Path(destination).write_text(_rows())
+        return {"schema_hash": ARCHETYPE["syntheticData"]["schemaHash"], "version": 3}
+    hub.download_synthetic_data.side_effect = download
+    bench.client_factory = lambda: hub
+    monkeypatch.setattr(bench, "client", lambda: hub)
+    app = build(root, bench=bench)
+    # Unit workflows do not need to inspect the developer's Docker environment.
+    bench.notebook_runtime = lambda *_: {"available": False, "inventory_verified": False, "packages": []}
+    with TestClient(app, base_url="http://127.0.0.1:8787") as browser:
+        token = app.state.local_sessions.launch_token
+        response = browser.post("/api/bootstrap", json={"token": token})
+        assert response.status_code == 200
+        browser.headers["x-epsilon-csrf"] = response.json()["csrf"]
+        yield SimpleNamespace(bench=bench, pid=pid, root=root, hub=hub, app=app,
+                              browser=browser, token=token, tmp=tmp_path,
+                              path="/api/projects/" + pid)

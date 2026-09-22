@@ -6,8 +6,16 @@ dist/
 build/
 *.egg-info/
 .venv/
+node_modules/
 
-# Chainlit scaffolding, generated on first run
+# Left behind by the removed Chainlit interface; keep it out of commits
 chainlit.md
 .chainlit/
 .files/
+
+# Local machine and tool state
+.DS_Store
+.pytest_cache/
+.claude/
+# Design prototypes kept locally, outside the package
+prototypes/

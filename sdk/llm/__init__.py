@@ -8,8 +8,6 @@ whether the enrichment layer is present before reaching for it.
 """
 from __future__ import annotations
 
-from typing import Optional
-
 from sdk.llm.base import (LLMError, Message, NoModelConfigured, Provider,
                           Reply, TierTooLow, ToolSpec)
 from sdk.llm.config import (AIConfig, TIER_A, TIER_B, TIER_C, load,

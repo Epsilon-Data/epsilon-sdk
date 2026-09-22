@@ -20,15 +20,6 @@ from sdk.catalogue import Match
 ANALYSES_DIR = "analyses"
 CHART_HELPER_NAME = "_charts.py"
 
-# Which analyses can be drawn, and which part of their result to draw.
-CHARTABLE = {
-    "describe": ("fields", "Distribution of {field}"),
-    "composition": ("table", "Composition by {by}"),
-    "cross_tab": ("table", "{rows} by {cols}"),
-    "prevalence": (None, None),
-    "trend": ("series", "Trend over time"),
-}
-
 
 class SnippetError(Exception):
     """Raised when a snippet cannot be generated for the given profile."""

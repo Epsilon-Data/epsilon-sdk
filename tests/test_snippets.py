@@ -156,8 +156,8 @@ class TestDescribeRespectsAccessLevel:
                 i % 100, i))          # 3000 distinct codes, 100 distinct years
         (project / "generated" / "data.csv").write_text(
             "\n".join(rows) + "\n", encoding="utf-8")
-        path = write(profile, SPECS_BY_KEY["describe"].evaluate(profile),
-                     project_dir=str(project))
+        write(profile, SPECS_BY_KEY["describe"].evaluate(profile),
+              project_dir=str(project))
         proc = subprocess.run(
             [sys.executable, "-c",
              "import json,sys; sys.path.insert(0,'.');"

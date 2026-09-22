@@ -3,6 +3,7 @@ Tests for CLI commands
 """
 import os
 import tempfile
+from pathlib import Path
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from unittest.mock import Mock, patch
@@ -55,12 +56,51 @@ def make_synthetic_archetype():
 class TestCLI:
     """Test suite for CLI commands"""
 
+    def test_doctor_reports_missing_login_without_touching_files(self, tmp_path, monkeypatch):
+        """doctor gives an actionable local diagnosis and does not initialise anything"""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("sdk.epsilon_cli.CONFIG_PATH", tmp_path / "credentials.ini")
+        monkeypatch.setattr("sdk.epsilon_cli.shutil.which", lambda name: None)
+
+        result = runner.invoke(app, ["doctor"])
+
+        assert result.exit_code == 1
+        assert "run 'epsilon login'" in result.output
+        assert "Docker is not installed" in result.output
+        assert not (tmp_path / "project.yml").exists()
+
+    def test_doctor_reports_ready_project_and_notebook(self, tmp_path, monkeypatch):
+        """doctor reports the checks needed before running a notebook"""
+        monkeypatch.chdir(tmp_path)
+        credentials = tmp_path / "credentials.ini"
+        credentials.write_text("[default]\naccess_token = test\n")
+        monkeypatch.setattr("sdk.epsilon_cli.CONFIG_PATH", credentials)
+        (tmp_path / "generated").mkdir()
+        (tmp_path / "generated/data.csv").write_text("value\n1\n")
+        (tmp_path / "generated/archetype.json").write_text("{}")
+        (tmp_path / "main.py").write_text("print('ok')\n")
+        (tmp_path / "project.yml").write_text("entry_point: main.py\n")
+        monkeypatch.setattr("sdk.epsilon_cli.shutil.which", lambda name: "/usr/local/bin/docker")
+
+        class Completed:
+            returncode = 0
+            stdout = "sha256:notebook"
+
+        monkeypatch.setattr("sdk.epsilon_cli.subprocess.run", lambda *args, **kwargs: Completed())
+
+        result = runner.invoke(app, ["doctor"])
+
+        assert result.exit_code == 0
+        assert "Account" in result.output
+        assert "Project" in result.output
+        assert "Docker and the isolated notebook image are ready" in result.output
+
     @patch('sdk.epsilon_cli.APIClient')
-    @patch('sdk.epsilon_cli.CONFIG_PATH')
-    def test_login_success(self, mock_config_path, mock_api_client):
+    def test_login_success(self, mock_api_client, tmp_path, monkeypatch):
         """Test successful login command"""
         # Setup mocks
-        mock_config_path.exists.return_value = False
+        config_path = tmp_path / "credentials.ini"
+        monkeypatch.setattr("sdk.epsilon_cli.CONFIG_PATH", config_path)
         mock_client = Mock()
         mock_client.access_token = 'test_token_123'
         mock_client.token_expires_at = datetime.now() + timedelta(hours=1)
@@ -72,6 +112,9 @@ class TestCLI:
         # Assertions
         assert result.exit_code == 0
         mock_client.authenticate.assert_called_once_with('testuser', 'testpass')
+        assert "test_token_123" in config_path.read_text()
+        assert "testpass" not in config_path.read_text()
+        assert config_path.stat().st_mode & 0o777 == 0o600
 
     @patch('sdk.epsilon_cli.APIClient')
     def test_login_authentication_error(self, mock_api_client):
@@ -117,17 +160,10 @@ class TestCLI:
         assert ("Error" in result.output or "error" in result.output)
 
     @patch('sdk.epsilon_cli.get_client')
-    @patch('sdk.epsilon_cli.os.path.exists')
-    @patch('sdk.epsilon_cli.os.makedirs')
-    @patch('builtins.open')
-    @patch('sdk.epsilon_cli.generate_csv_dummy_data')
-    @patch('sdk.epsilon_cli.compile_arch')
-    @patch('sdk.epsilon_cli.yaml.dump')
-    def test_init_command(self, mock_yaml_dump, mock_compile_arch, mock_generate_csv,
-                          mock_open, mock_makedirs, mock_exists, mock_get_client):
+    def test_init_command(self, mock_get_client, tmp_path, monkeypatch):
         """Test init command creates project structure"""
         # Setup mocks
-        mock_exists.return_value = False  # project.yml doesn't exist
+        monkeypatch.chdir(tmp_path)
         mock_client = Mock()
         # get_dataset returns the archetype JSON with $id field
         mock_client.get_dataset.return_value = {
@@ -152,9 +188,12 @@ class TestCLI:
 
         # Verify calls
         mock_client.get_dataset.assert_called_once_with('test_dataset')
-        assert mock_makedirs.call_count >= 1  # Creates generated directory
-        assert mock_generate_csv.call_count == 1
-        assert mock_compile_arch.call_count == 1
+        assert (tmp_path / "generated/data.csv").read_text().startswith("field1")
+        compile((tmp_path / "generated/models.py").read_text(), "models.py", "exec")
+        assert yaml.safe_load((tmp_path / "project.yml").read_text())["dataset_id"] == "test_dataset"
+        assert not list(tmp_path.glob(".epsilon-init-*"))
+        assert "generated/data.csv" in (tmp_path / ".gitignore").read_text().splitlines()
+        assert ".env" in (tmp_path / ".gitignore").read_text().splitlines()
 
     @patch('sdk.epsilon_cli.get_client')
     def test_init_downloads_synthetic_data(self, mock_get_client):
@@ -180,8 +219,10 @@ class TestCLI:
 
             with open('project.yml') as f:
                 project = yaml.safe_load(f)
+            assert Path("generated/data.csv").read_text() == 'patient.id,patient.age,score\n1,42,0.5\n'
 
-        mock_client.download_synthetic_data.assert_called_once_with('test_dataset', 'generated/data.csv')
+        mock_client.download_synthetic_data.assert_called_once()
+        assert mock_client.download_synthetic_data.call_args.args[0] == 'test_dataset'
         assert project['dataset_version'] == 4
         assert project['schema_hash'] == 'abc123def456'
 
@@ -348,15 +389,16 @@ class TestCLI:
 
         mock_client.download_synthetic_data.assert_not_called()
 
-    @patch('sdk.epsilon_cli.os.path.exists')
-    def test_init_command_project_exists(self, mock_exists):
+    def test_init_command_project_exists(self, tmp_path, monkeypatch):
         """Test init command when project already exists"""
-        mock_exists.return_value = True  # project.yml exists
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "project.yml").write_text("name: Existing research\n")
 
         result = runner.invoke(app, ['init', 'test_dataset'])
 
         assert result.exit_code == 1
         assert "Project already initialized" in result.output
+        assert (tmp_path / "project.yml").read_text() == "name: Existing research\n"
 
 
     @patch('sdk.epsilon_cli.os.path.exists')
@@ -400,7 +442,7 @@ class TestCLI:
         # Mock files exist
         mock_exists.return_value = True
 
-        result = runner.invoke(app, ['clean'])
+        result = runner.invoke(app, ['clean', '--yes'])
 
         assert result.exit_code == 0
         assert "Cleaned:" in result.output
@@ -441,6 +483,27 @@ class TestCLI:
         assert "Building analysis package from: main.py" in result.output
         assert "Dataset: test_dataset (archetype: test_archetype)" in result.output
         assert "Analysis package built successfully!" in result.output
+        # Staging is announced, because the platform reads the committed package.
+        assert any(call.args[0][:2] == ['git', 'add'] for call in mock_subprocess.call_args_list)
+        assert "Staged ./build/ in git" in result.output
+
+        mock_subprocess.reset_mock()
+        result = runner.invoke(app, ['build', '--skip-checks', '--no-git-add'])
+        assert result.exit_code == 0
+        assert not any(call.args[0][:2] == ['git', 'add'] for call in mock_subprocess.call_args_list)
+        assert "Staged" not in result.output
+
+    def test_clean_asks_before_deleting_the_researchers_code(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "main.py").write_text("my analysis")
+        (tmp_path / "generated").mkdir()
+        declined = runner.invoke(app, ['clean'], input="n\n")
+        assert declined.exit_code == 1 and "Nothing was deleted" in declined.output
+        assert "main.py" in declined.output and (tmp_path / "main.py").exists()
+        accepted = runner.invoke(app, ['clean'], input="y\n")
+        assert accepted.exit_code == 0 and not (tmp_path / "main.py").exists()
+        assert not (tmp_path / "generated").exists()
+        assert runner.invoke(app, ['clean']).output.strip() == "No project files to clean"
 
     @patch('sdk.epsilon_cli.os.path.exists')
     def test_build_command_no_project(self, mock_exists):
@@ -519,20 +582,31 @@ class TestCLI:
         assert "No credentials found" in result.output
         assert "Run 'epsilon login' to authenticate" in result.output
 
-    @patch('builtins.open')
-    @patch('sdk.epsilon_cli.Path')
-    def test_change_server_command_success(self, mock_path, mock_open):
-        """Test successful server change"""
-        # Mock file operations
-        mock_file = Mock()
-        mock_file.read.return_value = 'BASE_URL = "https://old-server.com"'
-        mock_open.return_value.__enter__.return_value = mock_file
+    def test_change_server_command_success(self, tmp_path, monkeypatch):
+        """The server is saved in the user's state folder, never in the package."""
+        from sdk import config
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.delenv("EPSILON_SERVER_URL", raising=False)
+        monkeypatch.setattr(config, "BASE_URL", config.DEFAULT_BASE_URL)
+        package_config = Path(config.__file__).read_text()
 
-        result = runner.invoke(app, ['change-server', 'https://new-server.com'])
+        result = runner.invoke(app, ['change-server', 'https://new-server.com/'])
 
         assert result.exit_code == 0
         assert "Server updated to: https://new-server.com" in result.output
         assert "You'll need to login again" in result.output
+        assert config.saved_server() == "https://new-server.com"
+        assert config.BASE_URL == "https://new-server.com"
+        assert (tmp_path / ".epsilon_sdk" / "server").stat().st_mode & 0o777 == 0o600
+        assert Path(config.__file__).read_text() == package_config
+
+    def test_change_server_warns_when_the_environment_overrides_it(self, tmp_path, monkeypatch):
+        from sdk import config
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("EPSILON_SERVER_URL", "https://from-env.example")
+        monkeypatch.setattr(config, "BASE_URL", config.DEFAULT_BASE_URL)
+        result = runner.invoke(app, ['change-server', 'https://new-server.com'])
+        assert result.exit_code == 0 and "takes precedence" in result.output
 
     def test_change_server_command_invalid_url(self):
         """Test change-server with invalid URL"""
@@ -547,12 +621,11 @@ class TestCLI:
 
         assert result.exit_code == 2  # Typer exit code for missing argument
 
-    @patch('builtins.open')
-    @patch('sdk.epsilon_cli.Path')
-    def test_change_server_command_file_error(self, mock_path, mock_open):
-        """Test change-server with file operation error"""
-        # Mock file read to raise exception
-        mock_open.side_effect = Exception("File error")
+    def test_change_server_command_file_error(self, monkeypatch):
+        """A state folder that cannot be written is reported, not raised."""
+        from sdk import config
+        monkeypatch.setattr(config, "BASE_URL", config.DEFAULT_BASE_URL)
+        monkeypatch.setattr(config, "save_server", Mock(side_effect=PermissionError("read-only")))
 
         result = runner.invoke(app, ['change-server', 'https://new-server.com'])
 

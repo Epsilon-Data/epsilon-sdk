@@ -99,9 +99,10 @@ def _no_dedupe_blocker(profile: Profile, quantity: str) -> Optional[str]:
             "count.".format(quantity))
 
 
-_UNLOCK_DEDUPE = ("Ask the data owner for a pseudonymised entity key -- a "
-                  "stable salted hash carries no re-identification risk and "
-                  "makes per-entity denominators computable.")
+_UNLOCK_DEDUPE = ("Ask the data owner whether an approved pseudonymised entity "
+                  "key can be provided. It makes per-entity denominators "
+                  "computable, but linkage and re-identification risk still "
+                  "require the data owner's assessment.")
 
 
 # What each named parameter has to be, so an override can be checked rather

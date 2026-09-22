@@ -1,0 +1,48 @@
+--- a/README.md
++++ b/README.md
+@@ -25,4 +25,43 @@
+    epsilon build
+    # Change Server (you can use local server api ex : http://localhost:3334) 
+    epsilon change-server <server_url>
+-   ```
+\ No newline at end of file
++   ```
++
++## Local workspace and Epsilon sign-in
++
++With the workbench-enabled SDK installed, run this from the project directory:
++
++```bash
++epsilon start
++```
++
++Choose **Sign in with Epsilon**. The browser opens Epsilon's existing sign-in
++service, reuses your Epsilon session when available, and returns to the local
++workspace. The SDK does not ask for your password in its UI. Account tokens stay
++in the SDK's protected local credentials file and are shared with CLI commands.
++
++The local app uses authorization code flow with PKCE. The platform's public
++`sdk-client` must register `http://127.0.0.1/auth/callback` and
++`http://localhost/auth/callback` with PKCE `S256` required. Keycloak supports the
++actual local port when matching these loopback registrations. No client secret
++or wildcard web origin is needed in this template.
++
++The workbench is currently on an unreleased SDK branch. For development, install
++that checkout in this template's Python environment rather than relying on the
++older PyPI package:
++
++```bash
++pip install -e '/absolute/path/to/sdk-epsilon[workbench,copilot]'
++```
++
++For an institution's own identity provider, set `EPSILON_SSO_ISSUER` and, if
++different, `EPSILON_SSO_CLIENT_ID` and `EPSILON_SSO_AUDIENCE` before starting the
++SDK. Use HTTPS for remote identity services; HTTP is accepted only on loopback.
++The production defaults are the Epsilon realm at
++`https://app.epsilon-data.org/keycloak/realms/epsilon`, client `sdk-client` and
++audience `epsilon.api`. A changed API server requires a matching sign-in.
++
++Signing out of the SDK clears its local account tokens and preserves project
++files. It does not sign you out of every Epsilon website. The SDK refresh token
++belongs to the ordinary Keycloak session; central sign-out prevents later
++refresh, while an already issued access token may remain valid until expiry.
