@@ -40,18 +40,25 @@ setup(
     package_data={'sdk': ['static/workbench/*',
                           'workbench/runtime/Dockerfile', 'workbench/runtime/worker.py', 'workbench/runtime/requirements.txt']},
     include_package_data=True,
+    # One install gives the CLI, the browser workspace (`epsilon start`) and
+    # the assistant's OS-keyring key storage.
     install_requires=[
         'requests',
         'typer>=0.12',
         'pyyaml',
-        'PyJWT[crypto]>=2.10,<3'
+        'PyJWT[crypto]>=2.10,<3',
+        'fastapi>=0.115,<1',
+        'uvicorn>=0.30,<1',
+        'pydantic>=2.7,<3',
+        'markdown-it-py>=3,<5',
+        'keyring>=23.0',
     ],
     extras_require={
         'dev': ['bump-my-version'],
-        'workbench': ['fastapi>=0.115,<1', 'uvicorn>=0.30,<1', 'pydantic>=2.7,<3', 'markdown-it-py>=3,<5'],
-        # Optional. Without it the copilot reads its API key from the
-        # environment instead; nothing else changes.
-        'copilot': ['keyring>=23.0']
+        # Kept so existing `epsilon-sdk[workbench,copilot]` commands still
+        # resolve; everything they used to add is now installed by default.
+        'workbench': [],
+        'copilot': [],
     },
     entry_points={
         'console_scripts': [

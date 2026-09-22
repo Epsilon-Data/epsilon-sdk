@@ -122,7 +122,7 @@ def _encoded(value):
 
 
 def _claims(token, jwks, selected, audience):
-    # PyJWT and cryptography are installed with the workbench extra.
+    # PyJWT and cryptography are installed with the SDK.
     try:
         import jwt
         if not isinstance(token, str) or not 1 <= len(token) <= 50000:

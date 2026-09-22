@@ -831,8 +831,9 @@ def start(
     """
     from sdk.workbench import server as workbench_server
     if not workbench_server.available():
-        typer.secho("epsilon start needs the workbench extra:", fg=typer.colors.RED)
-        typer.echo("  pip install 'epsilon-sdk[workbench,copilot]'")
+        typer.secho("The workspace dependencies are missing from this Python environment. Reinstall:",
+                    fg=typer.colors.RED)
+        typer.echo("  pip install --force-reinstall epsilon-sdk")
         raise typer.Exit(1)
     try:
         server, url = workbench_server.serve(".", port, open_browser=not no_browser, record=not no_record)

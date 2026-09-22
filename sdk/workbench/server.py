@@ -6,7 +6,7 @@ import webbrowser
 
 def available():
     try:
-        # Imported only to prove the workbench extras are installed;
+        # Imported only to prove the workspace dependencies are installed;
         # ConfigDict exists only in pydantic 2.
         import fastapi  # noqa: F401
         import uvicorn  # noqa: F401

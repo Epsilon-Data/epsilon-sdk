@@ -3,8 +3,8 @@
 ## Quick Start
 
 ```bash
-# 0. Install SDK (the extras add the browser workspace and its AI assistant)
-pip install "epsilon-sdk[workbench,copilot]"
+# 0. Install SDK (includes the browser workspace and its AI assistant)
+pip install epsilon-sdk
 
 # 1. Login to Epsilon
 epsilon login
@@ -97,15 +97,15 @@ for each step, stores progress only in this browser for that project, and can be
 paused, skipped, or reopened from **Help & guide**. It does not make an AI call
 until the researcher sends a question.
 
-The owned Epsilon interface runs at `127.0.0.1:7878`. Install the SDK with its
-workspace extras in the Python environment used to launch it:
+The owned Epsilon interface runs at `127.0.0.1:7878`. Install the SDK in the
+Python environment used to launch it:
 
 ```bash
-pip install "epsilon-sdk[workbench,copilot]"
+pip install epsilon-sdk
 epsilon start
 ```
 
-From a source checkout, use `pip install -e '.[workbench,copilot]'` instead.
+From a source checkout, use `pip install -e .` instead.
 
 No environment variables are needed for normal use. `epsilon start` uses the
 production API at `https://app.epsilon-data.org`, the current user's
@@ -399,7 +399,7 @@ Epsilon never sees your prompts.
 
 ```bash
 epsilon ai login      # stores settings in ~/.epsilon_sdk/config.ini,
-                      # key in your OS keyring (pip install 'epsilon-sdk[copilot]')
+                      # key in your OS keyring
 epsilon ai status     # which model, and where its key came from
 epsilon ai logout
 ```

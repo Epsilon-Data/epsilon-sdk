@@ -61,7 +61,7 @@ maps the reported operational and UX issues to their implementation and evidence
 - Browser verification uses an isolated synthetic dataset, fixture Epsilon authentication/download responses and scripted model responses through the existing AI wrapper. The server, store and Docker/Jupyter execution are real. These checks do not certify production hub access or a paid model account.
 - The real notebook tests cover persistent variables, PNG figures, pandas HTML, Markdown/JSON, output ordering, display handles, non-root configuration, read-only projection, no external network access or inherited host model key, stop and fresh restart. Remote/TCP Docker contexts are rejected.
 - Wheel and sdist builds passed. Isolated wheel imports verify every native UI module, the new backend modules, runtime sources, optional dependencies, Python >=3.9 metadata, local browser bootstrap and project APIs. No Chainlit import occurs; tests are excluded from the wheel.
-- CI installs the workbench extra in its Python 3.9–3.12 matrix. A separate Linux job builds and tests the notebook runtime. These workflow changes are local; remote CI awaits a push/PR.
+- CI installs the SDK in its Python 3.9–3.12 matrix. A separate Linux job builds and tests the notebook runtime. These workflow changes are local; remote CI awaits a push/PR.
 - One upstream Starlette test-client deprecation warning remains in this development environment.
 
 ## What ships in this branch
@@ -180,7 +180,7 @@ Earlier repair and starter iteration screenshots (28–30 are superseded above):
 Use Python 3.9 or newer for the workbench. Install into the environment that owns the `epsilon` executable, including a template project's separate virtual environment if applicable:
 
 ```bash
-pip install -e '/absolute/path/to/sdk-epsilon[workbench,copilot]'
+pip install -e '/absolute/path/to/sdk-epsilon'
 epsilon start
 ```
 
@@ -192,6 +192,6 @@ Enter your Epsilon credentials in the local sign-in form, or reuse an earlier `e
    **Dependency management follow-up:** add a researcher-controlled Libraries → Add library flow, project-specific dependency declarations and locks, isolated image rebuilds, and an explicit restart action. The model may propose a dependency; package installation requires a separate researcher action and the configured package-source policy.
 2. **Institutional policy and governed submissions.** Add dataset-specific provider/metadata policy enforcement, approved tool and package policies, disclosure accounting across repeated queries and a coordinator-backed review/submission API. The current review ZIP contains source and provenance and is deliberately not a deployment bundle. User-edited code remains unreviewed even when it ran in an isolated notebook.
 3. **Expand reviewed analysis methods.** Add statistically reviewed implementations, explicit assumptions and end-to-end output tests before enabling inference or entity-level methods. The catalogue remains authoritative; model phrasing cannot supply missing entity keys, event definitions or denominators.
-4. **Merge and release after review.** Choose the version and rollout policy, run staging acceptance, then merge/release with the workbench extra and template-environment installation instructions. No merge, push or PyPI publication has been performed as part of this implementation.
+4. **Merge and release after review.** Choose the version and rollout policy, run staging acceptance, then merge/release with the template-environment installation instructions. No merge, push or PyPI publication has been performed as part of this implementation.
 
 This is a single-researcher local workbench. It does not provide multi-user hosting, tenant RBAC, an institutional egress gateway or TRE output approval. Credential patterns cannot identify every confidential fact pasted into a research question. The UI and documentation make the cloud-provider context boundary visible; those institutional controls belong in the next integration stage.
