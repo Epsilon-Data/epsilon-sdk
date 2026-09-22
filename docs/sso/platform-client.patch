@@ -1,0 +1,19 @@
+--- a/dev/images/keycloak-config-cli/realm.json
++++ b/dev/images/keycloak-config-cli/realm.json
+@@ -784,7 +784,15 @@
+         "email",
+         "epsilon.api",
+         "epsilon.sdk"
+-      ]
++      ],
++      "redirectUris": [
++        "http://127.0.0.1/auth/callback",
++        "http://localhost/auth/callback"
++      ],
++      "webOrigins": [],
++      "attributes": {
++        "pkce.code.challenge.method": "S256"
++      }
+     },
+     {
+       "clientId": "$(env:EPSILON_COORDINATOR_CLIENT_ID)",

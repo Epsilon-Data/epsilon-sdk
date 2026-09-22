@@ -1,0 +1,15 @@
+{
+  "name": "epsilon-workbench-ui",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/workbench_*.test.cjs",
+    "lint": "eslint sdk/static/workbench/*.js",
+    "format": "prettier --write sdk/static/workbench/*.{js,css,html}"
+  },
+  "devDependencies": {
+    "eslint": "9.39.1",
+    "globals": "16.5.0",
+    "prettier": "3.6.2"
+  }
+}
