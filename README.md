@@ -3,8 +3,8 @@
 ## Quick Start
 
 ```bash
-# 0. Install SDK
-pip install epsilon-sdk
+# 0. Install SDK (the extras add the browser workspace and its AI assistant)
+pip install "epsilon-sdk[workbench,copilot]"
 
 # 1. Login to Epsilon
 epsilon login
@@ -97,13 +97,15 @@ for each step, stores progress only in this browser for that project, and can be
 paused, skipped, or reopened from **Help & guide**. It does not make an AI call
 until the researcher sends a question.
 
-The owned Epsilon interface runs at `127.0.0.1:7878`. Install this branch in the
-Python environment used to launch it:
+The owned Epsilon interface runs at `127.0.0.1:7878`. Install the SDK with its
+workspace extras in the Python environment used to launch it:
 
 ```bash
-pip install -e '.[workbench,copilot]'
+pip install "epsilon-sdk[workbench,copilot]"
 epsilon start
 ```
+
+From a source checkout, use `pip install -e '.[workbench,copilot]'` instead.
 
 No environment variables are needed for normal use. `epsilon start` uses the
 production API at `https://app.epsilon-data.org`, the current user's
@@ -129,11 +131,11 @@ use a fresh CLI launch link; account sign-in does not unlock the local server.
 The authorization-code/PKCE implementation remains available for a future browser
 SSO rollout, but the UI currently uses legacy credential sign-in. Its callback
 registration is not required for this form. See the
-[localhost SSO implementation notes](docs/localhost-sso.md).
+[localhost SSO implementation notes](https://github.com/Epsilon-Data/epsilon-sdk/blob/main/docs/localhost-sso.md).
 
 For the existing local Docker platform, use `EPSILON_SERVER_URL`
 and a separate `EPSILON_CREDENTIALS_PATH` as shown in the
-[local Docker setup](docs/localhost-sso.md#use-the-existing-local-docker-platform).
+[local Docker setup](https://github.com/Epsilon-Data/epsilon-sdk/blob/main/docs/localhost-sso.md#use-the-existing-local-docker-platform).
 This keeps local development sign-in separate from your production credentials.
 When a legacy access token expires, sign in again in the UI or run `epsilon login`.
 
@@ -161,7 +163,7 @@ when available, with a CSV fallback for older projects, and start without output
 Choose **Run all** to create your notebook's charts, then edit the fields/grouping
 or select **Use with AI** on a cell for help. Docker is needed for running cells;
 browsing previews and copying code work without it. See the
-[example library and demo walkthrough](docs/example-analyses.md).
+[example library and demo walkthrough](https://github.com/Epsilon-Data/epsilon-sdk/blob/main/docs/example-analyses.md).
 Open **Workspace** to work with the assistant and notebook side by side.
 Choose **Assistant**, **Both** or **Notebook**; the app remembers your choice, and
 you can resize the two panes. **Continue work** reopens your latest conversation or
@@ -226,7 +228,7 @@ The proposed fix returns as a code card with **Compare**, **Update cell**, and
 **Add as new cell** choices. Manually written or edited source shared this way,
 and fixes derived from it, are excluded from later automatic model context.
 
-See [assistant reliability and evaluations](docs/assistant-reliability.md) for
+See [assistant reliability and evaluations](https://github.com/Epsilon-Data/epsilon-sdk/blob/main/docs/assistant-reliability.md) for
 request recovery, sharing rules, and the opt-in 30-task model evaluation suite.
 
 Workspace always shows the live notebook and its cell outputs. Saved preview
@@ -303,7 +305,7 @@ Review ZIP exports contain source and provenance. They are **not TRE deployment
 or approval bundles**. Local minimum-cell and complementary suppression do not
 replace the TRE's output review or inference checks across repeated queries.
 
-See [implementation and rollout plan](docs/workbench-implementation.md) for
+See [implementation and rollout plan](https://github.com/Epsilon-Data/epsilon-sdk/blob/main/docs/workbench-implementation.md) for
 architecture, acceptance checks, screenshots and the next release stages.
 
 ### The commands underneath
